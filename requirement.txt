@@ -1,0 +1,14 @@
+scikit-fuzzy
+tqdm
+torch
+torchvision
+torchmetrics
+numpy
+matplotlib
+plotly
+pydot
+deap
+pandas
+openpyxl
+curl_cffi
+yfinance
