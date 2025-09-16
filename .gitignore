@@ -208,3 +208,8 @@ __marimo__/
 
 # IDE
 .idea
+
+# Data file
+data/*
+*.csv
+*.xslx

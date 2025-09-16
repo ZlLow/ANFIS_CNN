@@ -21,6 +21,7 @@ class _RunManager:
         """
 
         # sanfis parameters
+        self.best_weights = None
         self.epochs = epochs
         self.hparams_dict = hparams_dict
         self.n_statevars = n_statevars

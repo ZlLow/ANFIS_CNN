@@ -85,7 +85,7 @@ def download_stock_data(ticker: str, start_train: str, end_train: str, start_tes
     targets = targets.loc[common_index]
 
     # LOOK FORWARD CHECK
-    # look_forward_bias_check(features, targets)
+    #look_forward_bias_check(features, targets)
 
     train_features, train_targets = features.loc[start_train:end_train], targets.loc[start_train:end_train]
     test_features, test_targets = features.loc[start_test:end_test], targets.loc[start_test:end_test]
@@ -101,34 +101,34 @@ def preprocess(df: pd.DataFrame, num_horizons: int) -> tuple:
     for i in range(num_horizons):
         df[f'daily_log_return_{i}'] = log_return(df,1, i)
 
-    # for i in range(num_horizons):
-    #     df[f'intraday_log_return_{i}'] = intraday_log_return(df, i)
-    #
-    # for i in range(num_horizons):
-    #     df[f'overnight_log_return_{i}'] = over_night_return(df, i)
-    #
-    # for i in range(num_horizons):
-    #     df[f'day_range_{i}'] = day_range(df, i)
-    #
-    # df['notional_traded'] = notional_traded(df)
-    #
-    # for i in range(num_horizons):
-    #     df[f'notional_traded_change_{i}'] = notional_traded_change(df, 1, i)
-    #
-    # df['num_up_days_1m'] = up_days_count(df, 21)
-    #
-    # df['1m_mom'] = momentum(df, 21)
-    # df['3m_mom'] = momentum(df, 63)
-    # df['6m_mom'] = momentum(df, 126)
-    # df['12m_mom'] = momentum(df, 252)
-    # df['18m_mom'] = momentum(df, 378)
-    # df['mom_change_1m_3m'] = momentum_change(df, 21, 63)
-    # df['mom_change_3m_6m'] = momentum_change(df, 63, 126)
-    # df['mom_change_6m_12m'] = momentum_change(df, 126, 252)
-    # df['returns_volatility_1m'] = returns_std(df, 21)
-    # df['returns_volatility_3m'] = returns_std(df, 63)
-    # df['close_cv_1m'] = coefficient_of_variation(df, 21)
-    # df['close_cv_3m'] = coefficient_of_variation(df, 63)
+    for i in range(num_horizons):
+        df[f'intraday_log_return_{i}'] = intraday_log_return(df, i)
+
+    for i in range(num_horizons):
+        df[f'overnight_log_return_{i}'] = over_night_return(df, i)
+
+    for i in range(num_horizons):
+        df[f'day_range_{i}'] = day_range(df, i)
+
+    df['notional_traded'] = notional_traded(df)
+
+    for i in range(num_horizons):
+        df[f'notional_traded_change_{i}'] = notional_traded_change(df, 1, i)
+
+    df['num_up_days_1m'] = up_days_count(df, 21)
+
+    df['1m_mom'] = momentum(df, 21)
+    df['3m_mom'] = momentum(df, 63)
+    df['6m_mom'] = momentum(df, 126)
+    df['12m_mom'] = momentum(df, 252)
+    df['18m_mom'] = momentum(df, 378)
+    df['mom_change_1m_3m'] = momentum_change(df, 21, 63)
+    df['mom_change_3m_6m'] = momentum_change(df, 63, 126)
+    df['mom_change_6m_12m'] = momentum_change(df, 126, 252)
+    df['returns_volatility_1m'] = returns_std(df, 21)
+    df['returns_volatility_3m'] = returns_std(df, 63)
+    df['close_cv_1m'] = coefficient_of_variation(df, 21)
+    df['close_cv_3m'] = coefficient_of_variation(df, 63)
 
     # Handle NaN values in both df and y
     df.dropna(inplace=True)

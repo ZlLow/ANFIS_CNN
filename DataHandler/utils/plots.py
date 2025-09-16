@@ -15,7 +15,7 @@ def plt_prediction(y, y_pred, title='', save_path: Optional[str] = None):
     ymin, ymax = min(min(y), min(y_pred)), max(max(y), max(y_pred))
     max(max(y), max(y_pred))
     axs[0].plot(y, color='k')
-    axs[0].plot(y_pred, alpha=1.0, color='orange')
+    axs[0].plot(y_pred, color='orange')
     # axs[0].legend([r'$x_t$', r'$\hat{x}_t$'], prop={'size': 17})
     axs[0].grid(True)
     axs[0].set_ylim((ymin, ymax))
