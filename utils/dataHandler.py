@@ -8,7 +8,7 @@ from typing import List
 
 from sklearn.preprocessing import MinMaxScaler
 
-from DataHandler.utils.tradingIndicator import target_log_return, log_return, intraday_log_return, over_night_return, \
+from utils.tradingIndicator import target_log_return, log_return, intraday_log_return, over_night_return, \
     day_range, notional_traded, notional_traded_change, up_days_count, momentum, momentum_change, returns_std, \
     coefficient_of_variation
 
