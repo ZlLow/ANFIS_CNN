@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import torch
 from sklearn.preprocessing import MinMaxScaler
-from torch import nn, from_numpy
+from torch import nn, from_numpy, Tensor
 from torch.optim import Optimizer
 from torch.utils.data import TensorDataset, DataLoader
 from torchmetrics.functional import r2_score
@@ -15,7 +15,7 @@ from utils.plots import plot_actual_vs_predicted
 
 
 class AbstractANFIS(ABC, nn.Module):
-    def __init__(self, input_dim: int, num_mfs: int, num_rules: int, scaler: Optional[MinMaxScaler] = None, criterion: Optional[nn.Module] = None ):
+    def __init__(self, input_dim: int, num_mfs: int, num_rules: int, criterion: Optional[nn.Module] = None ):
         super(AbstractANFIS, self).__init__()
         self.input_dim = input_dim
         self.num_mfs = num_mfs
@@ -23,7 +23,7 @@ class AbstractANFIS(ABC, nn.Module):
 
         # --- Optimizer ---
         self.optimizer = None
-        self.scaler = MinMaxScaler(feature_range=(0, 1)) if scaler is None else scaler
+        self.scaler = MinMaxScaler(feature_range=(0, 1))
         self.criterion = nn.MSELoss(reduction='mean') if criterion is None else criterion
 
         # --- Layer 1: Fuzzification ---
@@ -37,22 +37,10 @@ class AbstractANFIS(ABC, nn.Module):
     def forward(self, x):
         pass
 
-    def fit(self, x_train_data: pd.DataFrame, y_train_data: pd.DataFrame, x_val_data: pd.DataFrame,
-            y_val_data: pd.DataFrame, optimizer: Optional[Optimizer], epochs: int = 300, batch_size: int = 64,
-            fold: int = 0):
+    def fit(self, train_loader: DataLoader, optimizer: Optional[Optimizer],
+            x_val_tensor: Optional[Tensor] = None, y_val_tensor: Optional[Tensor] = None,
+            epochs: int = 300, batch_size: int = 64, fold: int = 0):
         self.optimizer = optimizer
-
-        x_train_data_scaled = self.scaler.fit_transform(x_train_data)
-        y_train_data_scaled = self.scaler.fit_transform(y_train_data)
-        x_train_tensor = torch.tensor(x_train_data_scaled, dtype=torch.float32)
-        y_train_tensor = torch.tensor(y_train_data_scaled, dtype=torch.float32)
-        train_dataset = TensorDataset(x_train_tensor, y_train_tensor)
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-
-        x_val_data_scaled = self.scaler.fit_transform(x_val_data)
-        y_val_data_scaled = self.scaler.fit_transform(y_val_data)
-        x_val_tensor = torch.tensor(x_val_data_scaled, dtype=torch.float32)
-        y_val_tensor = torch.tensor(y_val_data_scaled, dtype=torch.float32)
 
         epoch_bar = tqdm(range(epochs), desc=f"Fold {fold + 1} Training", leave=False)
         for _ in epoch_bar:
@@ -69,14 +57,16 @@ class AbstractANFIS(ABC, nn.Module):
 
             # Calculate losses and update the epoch progress bar with live metrics
             avg_epoch_train_loss = np.sqrt(epoch_train_loss / len(train_loader))
+            if x_val_tensor is None or y_val_tensor is None:
+                epoch_bar.set_postfix(train_rmse=f"{avg_epoch_train_loss:.4f}")
+            else:
+                self.eval()
+                with torch.no_grad():
+                    val_output = self(x_val_tensor)
+                    val_loss = torch.sqrt(self.criterion(val_output, y_val_tensor)).item()
 
-            self.eval()
-            with torch.no_grad():
-                val_output = self(x_val_tensor)
-                val_loss = torch.sqrt(self.criterion(val_output, y_val_tensor)).item()
-
-            # Use set_postfix to display the latest metrics
-            epoch_bar.set_postfix(train_rmse=f"{avg_epoch_train_loss:.4f}", val_rmse=f"{val_loss:.4f}")
+                # Use set_postfix to display the latest metrics
+                epoch_bar.set_postfix(train_rmse=f"{avg_epoch_train_loss:.4f}", val_rmse=f"{val_loss:.4f}")
 
     def predict(self, x_val_data: pd.DataFrame, y_val_data: pd.DataFrame, save_path: Optional[str] = None):
         x_val_data_scaled = self.scaler.fit_transform(x_val_data)
@@ -96,7 +86,6 @@ class AbstractANFIS(ABC, nn.Module):
         print(f"r2 score: {r2_score(from_numpy(y_val_prices), from_numpy(val_output_prices)):6f}")
         plot_actual_vs_predicted(y_val_prices, val_output_prices, save_path)
         return val_loss_unscaled, r2_score(from_numpy(y_val_prices), from_numpy(val_output_prices))
-
 class GeneralizedBellMembershipFunc(nn.Module):
     def __init__(self, num_mfs, input_dim):
         super(GeneralizedBellMembershipFunc, self).__init__()

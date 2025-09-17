@@ -3,8 +3,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 import torch
-
-from torch import nn, from_numpy
+from torch import nn, from_numpy, Tensor
 from torch.optim import Optimizer
 from torch.utils.data import TensorDataset, DataLoader
 from torchmetrics.functional import r2_score
@@ -17,7 +16,7 @@ from models.ANFIS.AbstractANFIS import AbstractANFIS, GeneralizedBellMembershipF
 class HybridCnnAnfis(AbstractANFIS):
     def __init__(self, input_dim: int, num_mfs: int, num_filters: int, scaler: Optional = None,
                  criterion: Optional = None):
-        super(HybridCnnAnfis, self).__init__(input_dim, num_mfs, num_filters, scaler, criterion)
+        super(HybridCnnAnfis, self).__init__(input_dim, num_mfs, num_filters, criterion)
         # --- Layer 1: Fuzzification ---
         self.membership_funcs = GeneralizedBellMembershipFunc(num_mfs, input_dim)
 
@@ -46,66 +45,35 @@ class HybridCnnAnfis(AbstractANFIS):
 
         return output
 
-    def fit(self, x_train_data: pd.DataFrame, y_train_data: pd.DataFrame, x_val_data: pd.DataFrame,
-            y_val_data: pd.DataFrame, optimizer: Optional[Optimizer], epochs: int = 300, batch_size: int = 64, fold: int = 0):
-        self.optimizer = optimizer
-
-        x_train_data_scaled = self.scaler.fit_transform(x_train_data)
-        y_train_data_scaled = self.scaler.fit_transform(y_train_data)
-        x_train_tensor = torch.tensor(x_train_data_scaled, dtype=torch.float32)
-        y_train_tensor = torch.tensor(y_train_data_scaled, dtype=torch.float32)
-        train_dataset = TensorDataset(x_train_tensor, y_train_tensor)
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-
-        x_val_data_scaled = self.scaler.fit_transform(x_val_data)
-        y_val_data_scaled = self.scaler.fit_transform(y_val_data)
-        x_val_tensor = torch.tensor(x_val_data_scaled, dtype=torch.float32)
-        y_val_tensor = torch.tensor(y_val_data_scaled, dtype=torch.float32)
-
-        epoch_bar = tqdm(range(epochs), desc=f"Fold {fold + 1} Training", leave=False)
-        for _ in epoch_bar:
-            self.train()
-            epoch_train_loss = 0.0
-            # Wrap train_loader with tqdm for the inner batch loop
-            for batch_X, batch_y in train_loader:
-                optimizer.zero_grad()
-                outputs = self(batch_X)
-                loss = self.criterion(outputs, batch_y)
-                loss.backward()
-                optimizer.step()
-                epoch_train_loss += loss.item()
-
-            # Calculate losses and update the epoch progress bar with live metrics
-            avg_epoch_train_loss = np.sqrt(epoch_train_loss / len(train_loader))
-
-            self.eval()
-            with torch.no_grad():
-                val_output = self(x_val_tensor)
-                val_loss = torch.sqrt(self.criterion(val_output, y_val_tensor)).item()
-
-            # Use set_postfix to display the latest metrics
-            epoch_bar.set_postfix(train_rmse=f"{avg_epoch_train_loss:.4f}", val_rmse=f"{val_loss:.4f}")
-
-
-    def predict(self, x_val_data: pd.DataFrame, y_val_data: pd.DataFrame, save_path: Optional[str] = None):
-        x_val_data_scaled = self.scaler.fit_transform(x_val_data)
-        y_val_data_scaled = self.scaler.fit_transform(y_val_data)
-        x_val_tensor = torch.tensor(x_val_data_scaled, dtype=torch.float32)
-        y_val_tensor = torch.tensor(y_val_data_scaled, dtype=torch.float32)
-
+    def rolling_prediction(self, prices_train, prices_test, windows, scaler):
+        # 5. Rolling Forecast Prediction Loop
+        print("\n--- Starting Rolling Forecast Evaluation ---")
         self.eval()
+        predictions_scaled = []
+        # This history will be updated with actual values from the test set
+        historical_data = prices_train
         with torch.no_grad():
-            val_output_scaled = self(x_val_tensor)
+            for i in tqdm(range(len(prices_test)), desc="Rolling Prediction"):
+                # 1. Create features for the current step
+                # Convert the history to a pandas Series to use .rolling()
+                history_series = pd.Series(historical_data)
+                current_features = []
+                for w in windows:
+                    # Calculate the rolling mean for the LAST point in the series
+                    current_features.append(history_series.rolling(window=w).mean().iloc[-1])
 
-        val_output_prices = self.scaler.inverse_transform(val_output_scaled.numpy())
-        y_val_prices = self.scaler.inverse_transform(y_val_tensor.numpy())
+                # 2. Scale the features and convert to tensor
+                current_features_np = np.array(current_features).reshape(1,-1)
+                current_features_scaled = scaler.transform(current_features_np)
+                features_tensor = torch.tensor(current_features_scaled, dtype=torch.float32)
 
-        val_loss_unscaled = np.sqrt(
-            nn.MSELoss()(torch.tensor(val_output_prices), torch.tensor(y_val_prices))).item()
-        print(f"r2 score: {r2_score(from_numpy(y_val_prices), from_numpy(val_output_prices)):6f}")
-        plot_actual_vs_predicted(y_val_prices, val_output_prices, save_path)
-        return val_loss_unscaled, r2_score(from_numpy(y_val_prices), from_numpy(val_output_prices))
+                # 3. Make a prediction
+                prediction = self(features_tensor)
+                predictions_scaled.append(prediction.item())
 
+                # 4. Update history with the ACTUAL value from the test set
+                historical_data.append(prices_test[i])
+        return predictions_scaled, historical_data
 
 class CNNLayer(nn.Module):
     def __init__(self, in_channels: int, out_channels: int, kernel_size: int = 3, drop_out_rate: float = 0.2):

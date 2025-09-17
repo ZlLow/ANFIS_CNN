@@ -16,7 +16,7 @@ from models.ANFIS.AbstractANFIS import AbstractANFIS
 class ANFIS(AbstractANFIS):
     def __init__(self,  input_dim: int, num_mfs: int, scaler: Optional = None,
                  criterion: Optional[nn.Module] = None):
-        super(ANFIS, self).__init__(input_dim, num_mfs, num_mfs ** input_dim, scaler,
+        super(ANFIS, self).__init__(input_dim, num_mfs, num_mfs ** input_dim,
                  criterion)
 
         rule_premises = torch.zeros(self.num_rules, self.input_dim, dtype=torch.long)
@@ -65,65 +65,4 @@ class ANFIS(AbstractANFIS):
         output = torch.sum(normalized_firing_strengths * rule_outputs, dim=1, keepdim=True)
 
         return output
-
-    def fit(self, x_train_data: pd.DataFrame, y_train_data: pd.DataFrame, x_val_data: pd.DataFrame,
-            y_val_data: pd.DataFrame, optimizer: Optional[Optimizer], epochs: int = 300, batch_size: int = 64, fold: int = 0):
-        self.optimizer = optimizer
-
-        x_train_data_scaled = self.scaler.fit_transform(x_train_data)
-        y_train_data_scaled = self.scaler.fit_transform(y_train_data)
-        x_train_tensor = torch.tensor(x_train_data_scaled, dtype=torch.float32)
-        y_train_tensor = torch.tensor(y_train_data_scaled, dtype=torch.float32)
-        train_dataset = TensorDataset(x_train_tensor, y_train_tensor)
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-
-        x_val_data_scaled = self.scaler.fit_transform(x_val_data)
-        y_val_data_scaled = self.scaler.fit_transform(y_val_data)
-        x_val_tensor = torch.tensor(x_val_data_scaled, dtype=torch.float32)
-        y_val_tensor = torch.tensor(y_val_data_scaled, dtype=torch.float32)
-
-        epoch_bar = tqdm(range(epochs), desc=f"Fold {fold + 1} Training", leave=False)
-        for _ in epoch_bar:
-            self.train()
-            epoch_train_loss = 0.0
-            # Wrap train_loader with tqdm for the inner batch loop
-            for batch_X, batch_y in train_loader:
-                optimizer.zero_grad()
-                outputs = self(batch_X)
-                loss = self.criterion(outputs, batch_y)
-                loss.backward()
-                optimizer.step()
-                epoch_train_loss += loss.item()
-
-            # Calculate losses and update the epoch progress bar with live metrics
-            avg_epoch_train_loss = np.sqrt(epoch_train_loss / len(train_loader))
-
-            self.eval()
-            with torch.no_grad():
-                val_output = self(x_val_tensor)
-                val_loss = torch.sqrt(self.criterion(val_output, y_val_tensor)).item()
-
-            # Use set_postfix to display the latest metrics
-            epoch_bar.set_postfix(train_rmse=f"{avg_epoch_train_loss:.4f}", val_rmse=f"{val_loss:.4f}")
-            self.load_state_dict(self.optimizer.state_dict())
-
-
-    def predict(self, x_val_data: pd.DataFrame, y_val_data: pd.DataFrame, save_path: Optional[str] = None):
-        x_val_data_scaled = self.scaler.fit_transform(x_val_data)
-        y_val_data_scaled = self.scaler.fit_transform(y_val_data)
-        x_val_tensor = torch.tensor(x_val_data_scaled, dtype=torch.float32)
-        y_val_tensor = torch.tensor(y_val_data_scaled, dtype=torch.float32)
-
-        self.eval()
-        with torch.no_grad():
-            val_output_scaled = self(x_val_tensor)
-
-        val_output_prices = self.scaler.inverse_transform(val_output_scaled.numpy())
-        y_val_prices = self.scaler.inverse_transform(y_val_tensor.numpy())
-
-        val_loss_unscaled = np.sqrt(
-            nn.MSELoss()(torch.tensor(val_output_prices), torch.tensor(y_val_prices))).item()
-        print(f"r2 score: {r2_score(from_numpy(y_val_prices), from_numpy(val_output_prices)):6f}")
-        plot_actual_vs_predicted(y_val_prices, val_output_prices, save_path)
-        return val_loss_unscaled, r2_score(from_numpy(y_val_prices), from_numpy(val_output_prices))
 
