@@ -11,13 +11,13 @@ from models.ANFIS.AbstractANFIS import AbstractANFIS, GeneralizedBellMembershipF
 
 class HybridCnnAnfis(AbstractANFIS):
     def __init__(self, input_dim: int, num_mfs: int, num_filters: int,
-                 criterion: Optional = None):
+                 criterion: Optional = None, kernel_size:int = 3):
         super(HybridCnnAnfis, self).__init__(input_dim, num_mfs, num_filters, criterion)
         # --- Layer 1: Fuzzification ---
         self.membership_funcs = GeneralizedBellMembershipFunc(num_mfs, input_dim)
 
         # --- Layer 2 & 3: Firing Strength & Normalization ---
-        self.cnn_layers = CNNLayer(self.input_dim, self.num_rules)
+        self.cnn_layers = CNNLayer(self.input_dim, self.num_rules, kernel_size)
 
         # --- Layer 4: Consequent Parameters ---
         # The size is now based on the number of filters, not the old rule calculation
@@ -41,35 +41,32 @@ class HybridCnnAnfis(AbstractANFIS):
 
         return output
 
-    def rolling_prediction(self, prices_train, prices_test, windows, scaler):
-        # 5. Rolling Forecast Prediction Loop
-        print("\n--- Starting Rolling Forecast Evaluation ---")
+    def rolling_prediction(self, X_train_np, X_test_np,feature_scaler, target_scaler):
         self.eval()
-        predictions_scaled = []
-        # This history will be updated with actual values from the test set
-        historical_data = prices_train
+        predictions_unscaled = []
+
+        # Use the unscaled training data as the starting history
+        historical_X = X_train_np.tolist()
+
         with torch.no_grad():
-            for i in tqdm(range(len(prices_test)), desc="Rolling Prediction"):
-                # 1. Create features for the current step
-                # Convert the history to a pandas Series to use .rolling()
-                history_series = pd.Series(historical_data)
-                current_features = []
-                for w in windows:
-                    # Calculate the rolling mean for the LAST point in the series
-                    current_features.append(history_series.rolling(window=w).mean().iloc[-1])
+            for i in tqdm(range(len(X_test_np)), desc="Rolling Prediction"):
+                # Get the last known feature set from history
+                last_features = np.array(historical_X[-1]).reshape(1, -1)
 
-                # 2. Scale the features and convert to tensor
-                current_features_np = np.array(current_features).reshape(1,-1)
-                current_features_scaled = scaler.transform(current_features_np)
-                features_tensor = torch.tensor(current_features_scaled, dtype=torch.float32)
+                # Scale it using the scaler FITTED ON THE INITIAL TRAINING DATA
+                last_features_scaled = feature_scaler.transform(last_features)
+                features_tensor = torch.tensor(last_features_scaled, dtype=torch.float32)
 
-                # 3. Make a prediction
-                prediction = self(features_tensor)
-                predictions_scaled.append(prediction.item())
+                # Predict
+                prediction_scaled = self(features_tensor)
 
-                # 4. Update history with the ACTUAL value from the test set
-                historical_data.append(prices_test[i])
-        return predictions_scaled, historical_data
+                # Inverse transform the prediction to its real price value
+                prediction_unscaled = target_scaler.inverse_transform(prediction_scaled.numpy())
+                predictions_unscaled.append(prediction_unscaled.item())
+
+                # Update history with the new, actual feature set from the test data
+                historical_X.append(X_test_np[i])
+        return predictions_unscaled, historical_X
 
 class CNNLayer(nn.Module):
     def __init__(self, in_channels: int, out_channels: int, kernel_size: int = 3, drop_out_rate: float = 0.2):

@@ -9,7 +9,7 @@ from torch.utils.data import TensorDataset, DataLoader
 from torchmetrics.functional import r2_score
 from tqdm import tqdm
 
-from utils.plots import plot_actual_vs_predicted
+from utils.plotter import plot_actual_vs_predicted
 from models.ANFIS.AbstractANFIS import AbstractANFIS
 
 
