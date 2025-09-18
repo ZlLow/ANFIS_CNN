@@ -3,18 +3,14 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 import torch
-from torch import nn, from_numpy, Tensor
-from torch.optim import Optimizer
-from torch.utils.data import TensorDataset, DataLoader
-from torchmetrics.functional import r2_score
+from torch import nn
 from tqdm import tqdm
 
-from utils.plots import plot_actual_vs_predicted
 from models.ANFIS.AbstractANFIS import AbstractANFIS, GeneralizedBellMembershipFunc
 
 
 class HybridCnnAnfis(AbstractANFIS):
-    def __init__(self, input_dim: int, num_mfs: int, num_filters: int, scaler: Optional = None,
+    def __init__(self, input_dim: int, num_mfs: int, num_filters: int,
                  criterion: Optional = None):
         super(HybridCnnAnfis, self).__init__(input_dim, num_mfs, num_filters, criterion)
         # --- Layer 1: Fuzzification ---
