@@ -7,6 +7,7 @@ import torch
 from sklearn.preprocessing import MinMaxScaler
 from torch import nn, from_numpy, Tensor
 from torch.optim import Optimizer
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader
 from torchmetrics.functional import r2_score
 from tqdm import tqdm
@@ -42,6 +43,10 @@ class AbstractANFIS(ABC, nn.Module):
             epochs: int = 300, fold: int = 0):
         self.optimizer = optimizer
 
+        # --- ADD THIS: Initialize the Learning Rate Scheduler ---
+        # It will reduce the LR if `val_loss` does not improve for 10 epochs.
+        scheduler = ReduceLROnPlateau(optimizer, 'min', patience=10, factor=0.5, min_lr=1e-6)
+
         epoch_bar = tqdm(range(epochs), desc=f"Fold {fold + 1} Training", leave=False)
         for _ in epoch_bar:
             self.train()
@@ -52,6 +57,7 @@ class AbstractANFIS(ABC, nn.Module):
                 outputs = self(batch_X)
                 loss = self.criterion(outputs, batch_y)
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0)
                 optimizer.step()
                 epoch_train_loss += loss.item()
 
@@ -65,8 +71,14 @@ class AbstractANFIS(ABC, nn.Module):
                     val_output = self(x_val_tensor)
                     val_loss = torch.sqrt(self.criterion(val_output, y_val_tensor)).item()
 
-                # Use set_postfix to display the latest metrics
-                epoch_bar.set_postfix(train_rmse=f"{avg_epoch_train_loss:.4f}", val_rmse=f"{val_loss:.4f}")
+                # --- ADD THIS: Step the scheduler with the validation loss ---
+                scheduler.step(val_loss)
+
+                # Use set_postfix to display the latest metrics, including the current learning rate
+                current_lr = optimizer.param_groups[0]['lr']
+                epoch_bar.set_postfix(train_rmse=f"{avg_epoch_train_loss:.4f}",
+                                      val_rmse=f"{val_loss:.4f}",
+                                      lr=f"{current_lr:.1e}")
 
     def predict(self, x_val_tensor: Tensor, y_val_tensor: Tensor,target_scaler, dates: Optional[str] = None, save_path: Optional[str] = None):
         self.eval()

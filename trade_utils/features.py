@@ -2,7 +2,7 @@ import pandas as pd
 
 y_horizon = 13
 
-def calculate_macd(df, short_window=12, long_window=26, signal_window=9) -> pd.DataFrame:
+def calculate_macd(df: pd.DataFrame, short_window=12, long_window=26, signal_window=9) -> pd.DataFrame:
     """
     Calculate MACD (Moving Average Convergence Divergence) for a given DataFrame of close prices.
 
@@ -32,7 +32,7 @@ def calculate_macd(df, short_window=12, long_window=26, signal_window=9) -> pd.D
     return df[['MACD', 'MACD_Signal_Line']]
 
 
-def calculate_ideal_macd(df, short_window=12, long_window=26, signal_window=9) -> pd.DataFrame:
+def calculate_ideal_macd(df: pd.DataFrame, short_window=12, long_window=26, signal_window=9) -> pd.DataFrame:
     ret = calculate_macd(df.shift(-y_horizon), short_window, long_window, signal_window)
     return ret.rename(columns={'MACD': 'Ideal_MACD', 'MACD_Signal_Line': 'Ideal_MACD_Signal_Line'})
 
