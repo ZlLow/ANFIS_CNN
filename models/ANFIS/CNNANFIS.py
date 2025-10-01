@@ -1,5 +1,9 @@
 import torch
 import torch.nn as nn
+from sklearn.preprocessing import MinMaxScaler
+from torch.utils.data import TensorDataset, DataLoader
+from tqdm import tqdm
+
 
 class GeneralizedBellMembershipFunc(nn.Module):
     def __init__(self, num_mfs, input_dim):
@@ -54,12 +58,14 @@ class ConsequentGenerator(nn.Module):
 
 
 class HybridCnnAnfis(nn.Module):
-    def __init__(self, input_dim, num_mfs, num_rules, firing_conv_filters, consequent_conv_filters, device = torch.device('cpu')):
+    def __init__(self, input_dim, num_mfs, num_rules, firing_conv_filters, consequent_conv_filters,
+                 device=torch.device('cpu'), output_dim=1):
         super(HybridCnnAnfis, self).__init__()
         self.input_dim = input_dim
         self.num_mfs = num_mfs
         self.num_rules = num_rules
         self.device = device
+        self.output_dim = output_dim
 
         # Layer 1: Fuzzification
         self.membership_funcs = GeneralizedBellMembershipFunc(num_mfs, input_dim)
@@ -68,7 +74,7 @@ class HybridCnnAnfis(nn.Module):
         self.firing_strength_net = nn.Sequential(
             nn.Conv1d(in_channels=self.input_dim, out_channels=firing_conv_filters, kernel_size=2),
             nn.ReLU(),
-            nn.Dropout(0.2)
+            nn.Dropout(0.1)
         ).to(device)
         self.firing_fc = nn.Linear(firing_conv_filters, num_rules).to(device)
         self.batch_norm = nn.BatchNorm1d(num_rules).to(device)
@@ -78,6 +84,9 @@ class HybridCnnAnfis(nn.Module):
         self.consequent_generator = ConsequentGenerator(
             input_dim, num_mfs, num_rules, consequent_conv_filters
         ).to(device)
+
+        # Final projection layer for multi-step output
+        self.output_projection = nn.Linear(1, self.output_dim).to(device)
 
     def forward(self, x):
         batch_size = x.shape[0]
@@ -98,10 +107,12 @@ class HybridCnnAnfis(nn.Module):
         # Layer 4 & 5: Consequent Calculation and Aggregation
         x_aug = torch.cat([x, torch.ones(batch_size, 1, device=self.device)], dim=1).unsqueeze(1)
 
-        # Calculate rule outputs using the dynamically generated parameters
-        # (batch_size, num_rules, input_dim + 1) * (batch_size, 1, input_dim + 1) -> sum over last dim
         rule_outputs = (dynamic_consequent_params * x_aug).sum(dim=2)
-        final_output = (normalized_firing_strengths * rule_outputs).sum(dim=1, keepdim=True)
+        aggregated_output = (normalized_firing_strengths * rule_outputs).sum(dim=1, keepdim=True)
+
+        # Project to the desired output dimension (for multi-step forecasting)
+        final_output = self.output_projection(aggregated_output)
+
         return final_output
 
     def _forward_single(self, x):
@@ -113,88 +124,40 @@ class HybridCnnAnfis(nn.Module):
         dynamic_consequent_params = self.consequent_generator(memberships)
         x_aug = torch.cat([x, torch.ones(batch_size, 1, device=self.device)], dim=1).unsqueeze(1)
         rule_outputs = (dynamic_consequent_params * x_aug).sum(dim=2)
-        final_output = (normalized_firing_strengths * rule_outputs).sum(dim=1, keepdim=True)
+        aggregated_output = (normalized_firing_strengths * rule_outputs).sum(dim=1, keepdim=True)
+        final_output = self.output_projection(aggregated_output)
         return final_output
 
 
-class MultiOutputConsequentGenerator(nn.Module):
-    def __init__(self, input_dim, num_mfs, num_rules, num_conv_filters, output_dim):
-        super(MultiOutputConsequentGenerator, self).__init__()
-        self.conv_net = nn.Sequential(
-            nn.Conv1d(in_channels=input_dim, out_channels=num_conv_filters, kernel_size=2),
-            nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Flatten(start_dim=1)
-        )
+def train_anfis_model(features_X, target_Y, model_params, epochs=50, lr=0.001, batch_size=32):
+    scaler_X = MinMaxScaler()
+    scaler_y = MinMaxScaler()
 
-        with torch.no_grad():
-            dummy_input = torch.zeros(1, input_dim, num_mfs)
-            dummy_output = self.conv_net(dummy_input)
-            linear_input_size = dummy_output.shape[1]
+    X_scaled = scaler_X.fit_transform(features_X)
+    # The target_Y can be 1D or 2D, MinMaxScaler handles both
+    y_scaled = scaler_y.fit_transform(target_Y if len(target_Y.shape) > 1 else target_Y.reshape(-1, 1))
 
-        # The output size is now num_rules * y_horizon (one output per rule for each future day)
-        self.fc_net = nn.Linear(linear_input_size, num_rules * output_dim)
-        self.num_rules = num_rules
-        self.output_dim = output_dim
+    dataset = TensorDataset(torch.tensor(X_scaled, dtype=torch.float32),
+                            torch.tensor(y_scaled, dtype=torch.float32))
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True)
 
-    def forward(self, memberships):
-        conv_features = self.conv_net(memberships)
-        flat_params = self.fc_net(conv_features)
-        # Reshape to (batch_size, num_rules, y_horizon)
-        dynamic_params = flat_params.view(-1, self.num_rules, self.output_dim)
-        return dynamic_params
+    model = HybridCnnAnfis(input_dim=features_X.shape[1], **model_params)
+    criterion = nn.MSELoss(reduction='mean')
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-5)
+    epoch_bar = tqdm(range(epochs), desc="Training Multi-Step Model", leave=False)
 
+    for epoch in epoch_bar:
+        epoch_loss = 0.0
+        num_batches = 0
+        for batch_X, batch_y in loader:
+            optimizer.zero_grad()
+            outputs = model(batch_X)
+            loss = criterion(outputs, batch_y)
+            loss.backward()
+            optimizer.step()
+            epoch_loss += loss.item()
+            num_batches += 1
 
-class MultiOutputHybridCnnAnfis(nn.Module):
-    def __init__(self, input_dim, num_mfs, num_rules, firing_conv_filters, consequent_conv_filters, output_dim,
-                 device=torch.device('cpu')):
-        super(MultiOutputHybridCnnAnfis, self).__init__()
-        self.input_dim = input_dim
-        self.num_mfs = num_mfs
-        self.num_rules = num_rules
-        self.output_dim = output_dim
-        self.device = device
+        epoch_bar.set_postfix(train_rmse=f"{epoch_loss / num_batches:.6f}")
 
-        self.membership_funcs = GeneralizedBellMembershipFunc(num_mfs, input_dim)
-
-        self.firing_strength_net = nn.Sequential(
-            nn.Conv1d(in_channels=self.input_dim, out_channels=firing_conv_filters, kernel_size=2),
-            nn.ReLU(),
-            nn.Dropout(0.2)
-        ).to(device)
-        self.firing_fc = nn.Linear(firing_conv_filters, num_rules).to(device)
-        self.batch_norm = nn.BatchNorm1d(num_rules).to(device)
-        self.softmax = nn.Softmax(dim=1).to(device)
-
-        # Use the new multi-output consequent generator
-        self.consequent_generator = MultiOutputConsequentGenerator(
-            input_dim, num_mfs, num_rules, consequent_conv_filters, output_dim
-        ).to(device)
-
-    def forward(self, x):
-        # Layer 1: Fuzzification
-        memberships = self.membership_funcs(x)
-
-        # Head 1: Calculate Firing Strengths (w̄ᵢ)
-        firing_features = self.firing_strength_net(memberships).mean(dim=2)
-        firing_strength_logits = self.firing_fc(firing_features)
-
-        # Handle batch size of 1 during training/eval
-        if x.shape[0] > 1:
-            normalized_firing_strengths = self.softmax(self.batch_norm(firing_strength_logits))
-        else:
-            normalized_firing_strengths = self.softmax(firing_strength_logits)
-
-        # Head 2: Generate Consequent Parameters (now rule_outputs)
-        # Shape: (batch_size, num_rules, y_horizon)
-        rule_outputs = self.consequent_generator(memberships)
-
-        # Layer 5: Aggregation
-        # Multiply firing strengths across each of the y_horizon outputs
-        # (batch_size, num_rules, 1) * (batch_size, num_rules, y_horizon)
-        weighted_outputs = normalized_firing_strengths.unsqueeze(2) * rule_outputs
-
-        # Sum across the rules to get the final output
-        # Shape: (batch_size, y_horizon)
-        final_output = weighted_outputs.sum(dim=1)
-        return final_output
+    return model, scaler_X, scaler_y

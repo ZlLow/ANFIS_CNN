@@ -1,42 +1,25 @@
-import os
-
 import numpy as np
 import optuna
 import torch
-import torch.nn as nn
 from sklearn.model_selection import train_test_split
+from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 import pandas as pd
 from sklearn.preprocessing import MinMaxScaler
 from torchmetrics.functional import r2_score
 from tqdm.auto import tqdm
-import matplotlib.pyplot as plt
 import warnings
 
-from models.ANFIS.CNNANFIS import HybridCnnAnfis
+from models.ANFIS.CNNANFIS import HybridCnnAnfis, train_anfis_model
 from trade_utils.dataHandler import get_data
+from trade_utils.features import calculate_rsi, calculate_vanilla_macd, calculate_hindsight_macd,calculate_bollinger_width
+from trade_utils.plotter import plot_predicted_comparison, plot_compensated_comparison
 
 warnings.filterwarnings('ignore')
 
 # --- Helper Functions ---
 y_horizon = 13
-def calculate_vanilla_macd(series, slow=26, fast=12, signal=9):
-    ema_fast = series.ewm(span=fast, adjust=False).mean()
-    ema_slow = series.ewm(span=slow, adjust=False).mean()
-    macd = ema_fast - ema_slow
-    signal_line = macd.ewm(span=signal, adjust=False).mean()
-    return macd, signal_line
 
-
-def calculate_hindsight_macd(series, slow=26, fast=12, signal=9):
-    return calculate_vanilla_macd(series.shift(-y_horizon), fast, slow, signal)
-
-
-def calculate_volatility(series, window=10):
-    return series.pct_change().rolling(window=window).std()
-
-def calculate_roc(series, window=5):
-    return series.pct_change(periods=window)
 
 def pearson_correlation(preds, targets):
     """Calculates Pearson correlation coefficient using PyTorch tensors."""
@@ -45,186 +28,65 @@ def pearson_correlation(preds, targets):
     cov = torch.mean((preds - preds_mean) * (targets - targets_mean))
     preds_std = torch.std(preds)
     targets_std = torch.std(targets)
-    return cov / (preds_std * targets_std + 1e-6) # Add epsilon for stability
+    return cov / (preds_std * targets_std + 1e-6)  # Add epsilon for stability
 
-def create_multi_step_dataset(features, target, look_forward):
+
+def generate_predicted_macd(input_df, full_history_df, desc, price_predictor, scaler_X_price, scaler_y_price):
     """
-    Transforms time series data into a format for direct multi-step forecasting.
-    :param features: A NumPy array of input features.
-    :param target: A NumPy array of the target variable (e.g., 'Close' price).
-    :param look_forward: The number of future steps to predict (y_horizon).
-    :return: A tuple of (X, Y) where Y is a sequence of future values.
-    """
-    X, Y = [], []
-    for i in range(len(features) - look_forward):
-        X.append(features[i])
-        Y.append(target[i + 1 : i + 1 + look_forward])
-    return np.array(X), np.array(Y)
-
-def train_anfis_model(features_X, target_Y, model_params, epochs=50, lr=0.001, batch_size=32):
-    scaler_X = MinMaxScaler()
-    scaler_y = MinMaxScaler()
-
-    X_scaled = scaler_X.fit_transform(features_X)
-    y_scaled = scaler_y.fit_transform(target_Y.reshape(-1,1))
-    dataset = TensorDataset(torch.tensor(X_scaled, dtype=torch.float32), torch.tensor(y_scaled, dtype=torch.float32))
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True)
-
-    # Use the new MultiOutput ANFIS model
-    model = HybridCnnAnfis(input_dim=features_X.shape[1], **model_params)
-    criterion = nn.MSELoss(reduction='mean') # MSE works perfectly for multi-output regression
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-5)
-    epoch_bar = tqdm(range(epochs), desc="Training Mul`ti-Step Model", leave=False)
-
-    for epoch in epoch_bar:
-        epoch_loss = 0.0
-        num_batches = 0
-        for batch_X, batch_y in loader:
-            optimizer.zero_grad()
-            outputs = model(batch_X)
-            loss = criterion(outputs, batch_y)
-            loss.backward()
-            optimizer.step()
-            epoch_loss += loss.item()
-            num_batches += 1
-
-        epoch_bar.set_postfix(train_rmse=f"{epoch_loss/num_batches:.6f}")
-
-
-    return model, scaler_X, scaler_y
-
-
-
-def generate_predicted_macd(input_df, full_history_df,desc, price_predictor, scaler_X_price, scaler_y_price):
-    """
-    Encapsulated function to run the recursive MACD prediction loop.
+    Encapsulated function to run the direct multi-step MACD prediction.
     `input_df` is the dataframe to generate predictions for (train or test).
     `full_history_df` is the complete dataframe (df) for historical lookups.
     """
     predicted_macd_list = []
     predicted_signal_list = []
-    forward_days = 13
     backward_days = 13
 
     price_predictor.eval()
     with torch.no_grad():
         for i in tqdm(range(len(input_df)), desc=desc, leave=False):
-            # Get the index from the original full dataframe
             current_day_index = input_df.index[i]
 
-            # Step 1: Recursively predict future prices
-            future_price_predictions = []
-            # Features are taken from the day before the current day
+            # Features are taken from the day *before* the current day
             current_features_np = full_history_df[['Close', 'MACD_Vanilla', 'Signal_Vanilla']].iloc[
-                current_day_index - 1].values
-            temp_close_history = full_history_df['Close'].iloc[:current_day_index].copy()
+                current_day_index - 1].values.reshape(1, -1)
 
-            for _ in range(forward_days):
-                input_scaled = scaler_X_price.transform(current_features_np.reshape(1, -1))
-                input_tensor = torch.tensor(input_scaled, dtype=torch.float32)
-                pred_scaled = price_predictor(input_tensor)
-                pred_unscaled = scaler_y_price.inverse_transform(pred_scaled.numpy())[0][0]
-                future_price_predictions.append(pred_unscaled)
+            # Predict all future prices in a single step
+            input_scaled = scaler_X_price.transform(current_features_np)
+            input_tensor = torch.tensor(input_scaled, dtype=torch.float32)
+            pred_scaled = price_predictor(input_tensor)
+            future_price_predictions = scaler_y_price.inverse_transform(pred_scaled.numpy()).flatten()
 
-                temp_close_history = pd.concat([temp_close_history, pd.Series([pred_unscaled])], ignore_index=True)
-                new_macd, new_signal = calculate_vanilla_macd(temp_close_history)  # Use vanilla here for speed
-                current_features_np = np.array([pred_unscaled, new_macd.iloc[-1], new_signal.iloc[-1]])
-
-            # Step 3: Construct hybrid series and calculate MACD
+            # Construct hybrid series and calculate MACD
             past_prices = full_history_df['Close'].iloc[current_day_index - backward_days: current_day_index]
             hybrid_price_series = pd.concat([
                 past_prices,
                 pd.Series(future_price_predictions,
                           index=range(len(past_prices), len(past_prices) + len(future_price_predictions)))
             ], ignore_index=True)
+
             hybrid_macd, hybrid_signal = calculate_vanilla_macd(hybrid_price_series)
             predicted_macd_list.append(hybrid_macd.iloc[backward_days - 1])
             predicted_signal_list.append(hybrid_signal.iloc[backward_days - 1])
 
     return predicted_macd_list, predicted_signal_list
 
-def plot_predicted_comparison(df):
-    """
-    Generates a plot to compare the Predicted ANFIS model against the benchmarks.
-    """
-    # Create a figure with two subplots stacked vertically
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(18, 10), sharex=True, gridspec_kw={'height_ratios': [2, 3]})
-    fig.suptitle('Comparison with Model 3: Predicted ANFIS MACD', fontsize=16)
-
-    # Panel 1: Stock Closing Price for context
-    ax1.plot(df['Date'], df['Close'], label='Close Price', color='blue', alpha=0.8)
-    ax1.set_ylabel('Price', fontsize=12)
-    ax1.set_title('Stock Price (Test Period)', fontsize=14)
-    ax1.legend()
-    ax1.grid(True)
-
-    # Panel 2: MACD Comparison
-    ax2.plot(df['Date'], df['MACD_Vanilla'], label='Model 1: Vanilla (Lagging)', color='orange', linestyle='--', linewidth=1.5)
-    ax2.plot(df['Date'], df['MACD_Hindsight'], label='Model 2: Hindsight (Ideal Benchmark)', color='black', linewidth=2.5)
-    ax2.plot(df['Date'], df['MACD_Predicted'], label='Model 3: Predicted ANFIS', color='green', alpha=0.9, linewidth=1.5)
-
-    ax2.axhline(0, color='grey', linestyle='--', linewidth=1)  # Zero line for crossovers
-    ax2.set_ylabel('MACD Value', fontsize=12)
-    ax2.set_xlabel('Date', fontsize=12)
-    ax2.set_title('MACD Indicator Comparison', fontsize=14)
-    ax2.legend()
-    ax2.grid(True)
-    plt.savefig(os.path.join("img/predicted_macd.jpg"),
-                bbox_inches='tight', pad_inches=0)
-
-    plt.tight_layout(rect=[0, 0.03, 1, 0.96])
-    plt.show()
-
-
-
-# --- Graph 2: Comparing the Compensated MACD Model ---
-def plot_compensated_comparison(df):
-    """
-    Generates a plot to compare the Compensated ANFIS model against the benchmarks.
-    """
-    # Create a second, separate figure
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(18, 10), sharex=True, gridspec_kw={'height_ratios': [2, 3]})
-    fig.suptitle('Comparison with Model 4: Compensated ANFIS MACD', fontsize=16)
-
-    # Panel 1: Stock Closing Price for context
-    ax1.plot(df['Date'], df['Close'], label='Close Price', color='blue', alpha=0.8)
-    ax1.set_ylabel('Price', fontsize=12)
-    ax1.set_title('Stock Price (Test Period)', fontsize=14)
-    ax1.legend()
-    ax1.grid(True)
-
-    # Panel 2: MACD Comparison
-    ax2.plot(df['Date'], df['MACD_Vanilla'], label='Model 1: Vanilla (Lagging)', color='orange', linestyle='--', linewidth=1.5)
-    ax2.plot(df['Date'], df['MACD_Hindsight'], label='Model 2: Hindsight (Ideal Benchmark)', color='black', linewidth=2.5)
-    ax2.plot(df['Date'], df['MACD_Compensated'], label='Model 4: Compensated ANFIS', color='red', alpha=0.9, linewidth=1.5)
-
-    ax2.axhline(0, color='grey', linestyle='--', linewidth=1)  # Zero line for crossovers
-    ax2.set_ylabel('MACD Value', fontsize=12)
-    ax2.set_xlabel('Date', fontsize=12)
-    ax2.set_title('MACD Indicator Comparison', fontsize=14)
-    ax2.legend()
-    ax2.grid(True)
-    plt.savefig(os.path.join("img/compensated_macd.jpg"),
-                bbox_inches='tight', pad_inches=0)
-
-    plt.tight_layout(rect=[0, 0.03, 1, 0.96])
-    plt.show()
-
-
 # --- Main Implementation Function ---
-def run_all_models(ticker, start_date, end_date, anfis_params, batch_size:int, epochs:int = 50, lr=0.001):
+def run_all_models(ticker, start_date, end_date, anfis_params, batch_size: int, epochs: int = 50, lr=0.001):
     df = get_data(ticker, start_date, end_date)
-    # --- (Indicator calculations remain the same) ---
+    df = df['AAPL']
+    # --- Indicator Calculations ---
     print("Calculating Model 1: Vanilla MACD...")
     df['MACD_Vanilla'], df['Signal_Vanilla'] = calculate_vanilla_macd(df['Close'])
     print("Calculating Model 2: Hindsight MACD...")
     df['MACD_Hindsight'], df['Signal_Hindsight'] = calculate_hindsight_macd(df['Close'])
-    df['Volatility'] = calculate_volatility(df['Close'])
-    df['ROC'] = calculate_roc(df['Close'])
-    df['Volatility_ROC'] = calculate_roc(df['Volatility'])
-    df['ROC_Smoothed'] = df['ROC'].rolling(window=3).mean()
-    df['Volatility_ROC_Smoothed'] = df['Volatility_ROC'].rolling(window=3).mean()
-    df.drop(columns=['ROC', 'Volatility_ROC'], inplace=True)
+    df['RSI'] = calculate_rsi(df, 14)
+    df['BB_Width'] = calculate_bollinger_width(df['Close'], window=20)
+
+    # --- Multi-Step Target Generation ---
+    target_cols = [f'Close_t+{i + 1}' for i in range(y_horizon)]
+    for i in range(y_horizon):
+        df[target_cols[i]] = df['Close'].shift(-(i + 1))
+
     df.dropna(inplace=True)
     df.reset_index(drop=True, inplace=True)
 
@@ -234,42 +96,45 @@ def run_all_models(ticker, start_date, end_date, anfis_params, batch_size:int, e
 
     # --- Building Model 3: Predicted MACD (with DIRECT Multi-Step Prediction) ---
     print("\n--- Building Model 3: Multi-Step Price Predictor ---")
+    price_model_features = df_train[['Close', 'MACD_Vanilla', 'Signal_Vanilla']].values
+    price_model_target = df_train[target_cols].values
 
-    price_model_features = df_train[['Close','MACD_Vanilla','Signal_Vanilla']].values
+    # Add output_dim to model parameters for multi-step training
+    anfis_params['output_dim'] = y_horizon
 
-    # Use the direct prediction target from suggestion #1 for best results
-    price_model_target = df_train['Close'].shift(-y_horizon).values
+    price_predictor, scaler_X_price, scaler_y_price = train_anfis_model(
+        price_model_features, price_model_target, anfis_params,
+        epochs=epochs, lr=lr, batch_size=batch_size
+    )
 
-    # Drop NaNs from the end
-    price_model_features = price_model_features[:-y_horizon]
-    price_model_target = price_model_target[:-y_horizon]
-
-    # Train the new multi-step model
-    price_predictor, scaler_X_price, scaler_y_price = train_anfis_model(price_model_features, price_model_target,
-                                                                        anfis_params, epochs=epochs, lr=lr,
-                                                                        batch_size=batch_size)
-
-    macd_pred_train, signal_pred_train = generate_predicted_macd(df_train, df, "Generating Predicted MACD (Train)", price_predictor, scaler_X_price, scaler_y_price)
-
+    # Generate predictions using the direct multi-step method
+    macd_pred_train, signal_pred_train = generate_predicted_macd(df_train, df, "Generating Predicted MACD (Train)",
+                                                                 price_predictor, scaler_X_price, scaler_y_price)
     df_train['MACD_Predicted'] = macd_pred_train
     df_train['Signal_Predicted'] = signal_pred_train
 
-    predicted_macd_list, predicted_signal_list = generate_predicted_macd(df_test, df,"Generating Predicted MACD (Test)", price_predictor, scaler_X_price, scaler_y_price)
-
+    predicted_macd_list, predicted_signal_list = generate_predicted_macd(df_test, df,
+                                                                         "Generating Predicted MACD (Test)",
+                                                                         price_predictor, scaler_X_price,
+                                                                         scaler_y_price)
     df_test['MACD_Predicted'] = predicted_macd_list
     df_test['Signal_Predicted'] = predicted_signal_list
 
+    # --- Building Model 4: Compensated MACD ---
+    print("\n--- Building Model 4: Compensated MACD ---")
+    # Remove output_dim as this is a single-output model
     anfis_params.pop('output_dim', None)
 
-    print("\n--- Building Model 4: Compensated MACD ---")
-    comp_model_features = df_train[['Close', 'MACD_Predicted', 'Signal_Predicted', "Volatility", "ROC_Smoothed", "Volatility_ROC_Smoothed"]].values
+    comp_model_features = df_train[
+        ['Close', 'MACD_Predicted', 'Signal_Predicted', "BB_Width", "RSI"]].values
     comp_model_target = df_train['MACD_Hindsight'].values
-    comp_predictor, scaler_X_comp, scaler_y_comp = train_anfis_model(comp_model_features, comp_model_target,
-                                                                     anfis_params, epochs=epochs, lr=lr,
-                                                                     batch_size=batch_size)
+    comp_predictor, scaler_X_comp, scaler_y_comp = train_anfis_model(
+        comp_model_features, comp_model_target, anfis_params,
+        epochs=epochs, lr=lr, batch_size=batch_size
+    )
 
-    # The test features now correctly match the training feature distribution
-    comp_test_features = df_test[['Close', 'MACD_Predicted', 'Signal_Predicted', "Volatility", "ROC_Smoothed", "Volatility_ROC_Smoothed"]].values
+    comp_test_features = df_test[
+        ['Close', 'MACD_Predicted', 'Signal_Predicted', "BB_Width","RSI"]].values
     comp_test_scaled = scaler_X_comp.transform(comp_test_features)
     comp_test_tensor = torch.tensor(comp_test_scaled, dtype=torch.float32)
 
@@ -294,11 +159,11 @@ def run_all_models(ticker, start_date, end_date, anfis_params, batch_size:int, e
 
 def objective(trial, X_train, y_train, X_val, y_val, device):
     params = {
-        'lr': trial.suggest_float('lr', 1e-8,1e-1, log=True),
+        'lr': trial.suggest_float('lr', 1e-8, 1e-1, log=True),
         'batch_size': trial.suggest_categorical('batch_size', [16, 512]),
-        'num_mfs': trial.suggest_int('num_mfs', 3,7),
+        'num_mfs': trial.suggest_int('num_mfs', 3, 7),
         'num_rules': trial.suggest_int('num_rules', 3, 512),
-        'firing_conv_filters': trial.suggest_int('firing_conv_filters', 2,512),
+        'firing_conv_filters': trial.suggest_int('firing_conv_filters', 2, 512),
         'consequent_conv_filters': trial.suggest_int('consequent_conv_filters', 4, 16),
     }
 
@@ -316,7 +181,7 @@ def objective(trial, X_train, y_train, X_val, y_val, device):
     model = HybridCnnAnfis(**model_params).to(device)
 
     criterion = nn.MSELoss(reduction='mean')
-    optimizer = torch.optim.Adam(model.parameters(), lr=params['lr'],weight_decay=1e-5)
+    optimizer = torch.optim.Adam(model.parameters(), lr=params['lr'], weight_decay=1e-4)
     epochs = 30
 
     for epoch in range(epochs):
@@ -364,8 +229,8 @@ def objective_macd(trial, X_train, y_train, X_val, y_val, device):
     model = HybridCnnAnfis(**model_params).to(device)
 
     criterion = nn.MSELoss(reduction='mean')
-    optimizer = torch.optim.Adam(model.parameters(), lr=params['lr'], weight_decay=1e-5)
-    epochs = 30 # Number of epochs for each trial
+    optimizer = torch.optim.Adam(model.parameters(), lr=params['lr'], weight_decay=1e-4)
+    epochs = 100  # Number of epochs for each trial
 
     # Training loop
     for epoch in range(epochs):
@@ -389,7 +254,8 @@ def objective_macd(trial, X_train, y_train, X_val, y_val, device):
         validation_pearson = pearson_correlation(val_preds.squeeze(), y_val.squeeze())
 
     # Optuna will try to minimize the first value (RMSE) and maximize the second (R2)
-    return validation_rmse.item(), validation_r2.item(),validation_pearson.item()
+    return validation_rmse.item(), validation_r2.item(), validation_pearson.item()
+
 
 def run_validation():
     TICKER = 'AAPL'
@@ -402,7 +268,7 @@ def run_validation():
     df['MACD'], df['Signal'] = calculate_vanilla_macd(df['Close'])
     df.dropna(inplace=True)
 
-    features_df = df[['Close','MACD', 'Signal']]
+    features_df = df[['Close', 'MACD', 'Signal']]
     target_series = df['Close']
 
     X_train_val, X_test, y_train_val, y_test = train_test_split(
@@ -488,14 +354,15 @@ def run_validation():
     print(f"\nFinal Model Performance on Unseen Test Set:")
     print(f"  Test RMSE (unscaled): {final_test_rmse:.6f}")
     print(f"  Test R2 Score (unscaled): {final_test_r2:.6f}")
-    return final_model_params,best_trial.params['batch_size'], best_trial.params['lr']
+    return final_model_params, best_trial.params['batch_size'], best_trial.params['lr']
+
 
 def run_validation_for_macd():
     """
     Prepares data and runs Optuna study to find the best hyperparameters
     for the Compensated MACD model (Model 4).
     """
-    TICKER = 'AAPL'
+    TICKER = ['AAPL']
     START_DATE = '2010-01-01'
     END_DATE = '2023-12-31'
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -503,19 +370,17 @@ def run_validation_for_macd():
 
     # --- 1. Data Preparation ---
     df = get_data(TICKER, START_DATE, END_DATE)
+    df = df['AAPL']
 
     # Calculate all necessary indicators
     df['MACD_Vanilla'], df['Signal_Vanilla'] = calculate_vanilla_macd(df['Close'])
     df['MACD_Hindsight'], _ = calculate_hindsight_macd(df['Close'])
-    df['Volatility'] = calculate_volatility(df['Close'])
-    df['ROC'] = calculate_roc(df['Close'])
-    df['Volatility_ROC'] = calculate_roc(df['Volatility'])
-    df['ROC_Smoothed'] = df['ROC'].rolling(window=3).mean()
-    df['Volatility_ROC_Smoothed'] = df['Volatility_ROC'].rolling(window=3).mean()
+    df['RSI'] = calculate_rsi(df, 14)
+    df['BB_Width'] = calculate_bollinger_width(df['Close'], window=20)
     df.dropna(inplace=True)
 
     # Define features and the NEW target
-    feature_cols = ['Close', 'MACD_Vanilla', 'Signal_Vanilla', "Volatility", "ROC_Smoothed", "Volatility_ROC_Smoothed"]
+    feature_cols = ['Close', 'MACD_Vanilla', 'Signal_Vanilla', 'RSI', 'BB_Width']
     target_col = 'MACD_Hindsight'
 
     features_df = df[feature_cols]
@@ -526,7 +391,7 @@ def run_validation_for_macd():
         features_df.values, target_series.values, test_size=0.2, shuffle=False
     )
     X_train, X_val, y_train, y_val = train_test_split(
-        X_train_val, y_train_val, test_size=0.2, shuffle=False # 0.2 of 0.8 is 0.16
+        X_train_val, y_train_val, test_size=0.2, shuffle=False  # 0.2 of 0.8 is 0.16
     )
 
     # IMPORTANT: Scale features and target separately
@@ -588,20 +453,21 @@ if __name__ == '__main__':
     BATCH_SIZE = 32
     LR = 0.03951560476728942
     best_param = {
-            'num_mfs': 3,
-            'num_rules': 128,
-            'firing_conv_filters': 79,
-            'consequent_conv_filters': 7
+        'num_mfs': 3,
+        'num_rules': 128,
+        'firing_conv_filters': 79,
+        'consequent_conv_filters': 7
     }
     # best_param, BATCH_SIZE, LR = run_validation_for_macd()
     # device = best_param['device']
     # best_param.pop("device")
     # best_param.pop('input_dim')
-    TICKER = 'AAPL'
+    TICKER = ['AAPL']
     START_DATE = '2010-01-01'
     END_DATE = '2023-12-31'
 
-    results_df = run_all_models(ticker=TICKER, start_date=START_DATE, end_date=END_DATE,anfis_params=best_param,batch_size=BATCH_SIZE,lr=LR,epochs=150)
+    results_df = run_all_models(ticker=TICKER, start_date=START_DATE, end_date=END_DATE, anfis_params=best_param,
+                                batch_size=BATCH_SIZE, lr=LR, epochs=200)
 
     print(f"\n--- Comparison of MACD Models for {TICKER} (First 5 Rows of Test Set) ---")
     print(results_df.head())

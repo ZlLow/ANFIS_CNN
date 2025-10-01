@@ -1,7 +1,11 @@
 import os
 
 from typing import Optional
+
+import numpy as np
+import pandas as pd
 from matplotlib import pyplot as plt
+import plotly.graph_objs as go
 
 def plot_actual_vs_predicted(actual, predicted, dates: Optional = None,title: Optional[str] = "Stock Price Prediction using Hybrid CNN-ANFIS", save_path: Optional[str] = None):
     plt.figure(figsize=(15, 7))
@@ -62,17 +66,128 @@ def plot_table(fold_results, title: str="RMSE", save_path: Optional[str] = None)
         fig.savefig(os.path.join(save_path),
                     bbox_inches='tight', pad_inches=0)
 
-def plot_graph(historical_data,dates: Optional = None,save_path: Optional[str] = None):
-    plt.figure(figsize=(15, 7))
-    if dates is not None:
-        plt.plot(dates,historical_data, label='Actual Price', color='blue', alpha=0.7)
-    else:
-        plt.plot(historical_data, label='Actual Price', color='blue', alpha=0.7)
+
+def plot_predicted_comparison(df):
+    """
+    Generates a plot to compare the Predicted ANFIS model against the benchmarks.
+    """
+    # Create a figure with two subplots stacked vertically
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(18, 10), sharex=True, gridspec_kw={'height_ratios': [2, 3]})
+    fig.suptitle('Comparison with Model 3: Predicted ANFIS MACD', fontsize=16)
+
+    # Panel 1: Stock Closing Price for context
+    ax1.plot(df['Date'], df['Close'], label='Close Price', color='blue', alpha=0.8)
+    ax1.set_ylabel('Price', fontsize=12)
+    ax1.set_title('Stock Price (Test Period)', fontsize=14)
+    ax1.legend()
+    ax1.grid(True)
+
+    # Panel 2: MACD Comparison
+    ax2.plot(df['Date'], df['MACD_Vanilla'], label='Model 1: Vanilla (Lagging)', color='orange', linestyle='--',
+             linewidth=1.5)
+    ax2.plot(df['Date'], df['MACD_Hindsight'], label='Model 2: Hindsight (Ideal Benchmark)', color='black',
+             linewidth=2.5)
+    ax2.plot(df['Date'], df['MACD_Predicted'], label='Model 3: Predicted ANFIS', color='green', alpha=0.9,
+             linewidth=1.5)
+
+    ax2.axhline(0, color='grey', linestyle='--', linewidth=1)  # Zero line for crossovers
+    ax2.set_ylabel('MACD Value', fontsize=12)
+    ax2.set_xlabel('Date', fontsize=12)
+    ax2.set_title('MACD Indicator Comparison', fontsize=14)
+    ax2.legend()
+    ax2.grid(True)
+    plt.savefig(os.path.join("img/predicted_macd.jpg"),
+                bbox_inches='tight', pad_inches=0)
+
+    plt.tight_layout(rect=[0, 0.03, 1, 0.96])
+    plt.show()
+
+
+# --- Graph 2: Comparing the Compensated MACD Model ---
+def plot_compensated_comparison(df):
+    """
+    Generates a plot to compare the Compensated ANFIS model against the benchmarks.
+    """
+    # Create a second, separate figure
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(18, 10), sharex=True, gridspec_kw={'height_ratios': [2, 3]})
+    fig.suptitle('Comparison with Model 4: Compensated ANFIS MACD', fontsize=16)
+
+    # Panel 1: Stock Closing Price for context
+    ax1.plot(df['Date'], df['Close'], label='Close Price', color='blue', alpha=0.8)
+    ax1.set_ylabel('Price', fontsize=12)
+    ax1.set_title('Stock Price (Test Period)', fontsize=14)
+    ax1.legend()
+    ax1.grid(True)
+
+    # Panel 2: MACD Comparison
+    ax2.plot(df['Date'], df['MACD_Vanilla'], label='Model 1: Vanilla (Lagging)', color='orange', linestyle='--',
+             linewidth=1.5)
+    ax2.plot(df['Date'], df['MACD_Hindsight'], label='Model 2: Hindsight (Ideal Benchmark)', color='black',
+             linewidth=2.5)
+    ax2.plot(df['Date'], df['MACD_Compensated'], label='Model 4: Compensated ANFIS', color='red', alpha=0.9,
+             linewidth=1.5)
+
+    ax2.axhline(0, color='grey', linestyle='--', linewidth=1)  # Zero line for crossovers
+    ax2.set_ylabel('MACD Value', fontsize=12)
+    ax2.set_xlabel('Date', fontsize=12)
+    ax2.set_title('MACD Indicator Comparison', fontsize=14)
+    ax2.legend()
+    ax2.grid(True)
+    plt.savefig(os.path.join("img/compensated_macd.jpg"),
+                bbox_inches='tight', pad_inches=0)
+
+    plt.tight_layout(rect=[0, 0.03, 1, 0.96])
+    plt.show()
+
+def get_simulation_insights(sim_results, initial_investment):
+    mean_return = np.mean(sim_results)
+    median_return = np.median(sim_results)
+    std_dev = np.std(sim_results)
+    percentile_5 = np.percentile(sim_results, 5)
+    var_95 = initial_investment - percentile_5  # VaR at 95% confidence
+    cvar_95 = initial_investment - np.mean(sim_results[sim_results <= percentile_5])
+    prob_loss = np.mean(sim_results < initial_investment) * 100
+    sharpe_ratio = (mean_return - initial_investment) / std_dev  # Assuming risk-free rate is 0
+
+    insights = {
+        'Initial Investment': f"${initial_investment:,.2f}",
+        'Expected Final Portfolio Value': f"${mean_return:,.2f}",
+        'Median Final Portfolio Value': f"${median_return:,.2f}",
+        'Standard Deviation of Final Portfolio Value': f"${std_dev:,.2f}",
+        'Value at Risk (VaR 95%)': f"${var_95:,.2f}",
+        'Conditional Value at Risk (CVaR 95%)': f"${cvar_95:,.2f}",
+        'Probability of Loss': f"{prob_loss:.2f}%",
+        'Sharpe Ratio': f"{sharpe_ratio:.4f}"
+    }
+    return insights
+
+
+# --- NEW ---
+def plot_comparison_graph(strategy_perf, benchmark_perf, mc_mean_projection, tickers):
+    """Plots the historical strategy performance against the benchmark and adds the MC projection."""
+    plt.figure(figsize=(14, 7))
+
+    # Plot historical performance
+    strategy_perf.plot(label='ANFIS Optimized Strategy', color='blue', lw=2)
+    benchmark_perf.plot(label='Equal-Weight Buy & Hold Benchmark', color='gray', linestyle='--', lw=2)
+
+    # Create future date index for the projection
+    last_date = strategy_perf.index[-1]
+    future_dates = pd.date_range(start=last_date, periods=len(mc_mean_projection) + 1, freq='B')[1:]
+
+    # Combine last historical point with projection for a continuous line
+    projection_series = pd.Series(
+        np.concatenate(([strategy_perf.iloc[-1]], mc_mean_projection)),
+        index=[last_date] + list(future_dates)
+    )
+
+    projection_series.plot(label='Mean Monte Carlo Projection', color='red', linestyle='-.', lw=2)
+
+    plt.title(f'Strategy Performance vs. Benchmark for {", ".join(tickers)}')
+    plt.xlabel('Date')
+    plt.ylabel('Portfolio Value ($)')
     plt.legend()
-    plt.title("Stock Price Prediction using Hybrid CNN-ANFIS")
-    plt.xlabel("Dates")
-    plt.ylabel("Close Price")
-    if save_path is not None:
-        plt.savefig(os.path.join(save_path),
-                    bbox_inches='tight', pad_inches=0)
     plt.grid(True)
+    plt.savefig(os.path.join("img/mc_comparison_graph.jpg"),
+                bbox_inches='tight', pad_inches=0)
+    plt.show()

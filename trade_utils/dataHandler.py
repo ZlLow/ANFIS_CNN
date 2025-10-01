@@ -1,30 +1,31 @@
 import os
-from typing import Any
+from typing import Any, Dict
 
 import numpy as np
 import pandas as pd
 import yfinance as yf
 from numpy import ndarray, dtype
 
-from trade_utils.features import calculate_ideal_macd, calculate_macd
 from trade_utils.trading_indicator import target_log_return, log_return, intraday_log_return, over_night_return, \
     day_range, notional_traded, notional_traded_change, up_days_count, momentum, momentum_change, returns_std, \
     coefficient_of_variation
 
 
-def get_data(ticker, start_date, end_date):
-    print(f"Downloading and preprocessing data for {ticker}...")
-    df = yf.download(ticker, start=start_date, end=end_date)
-    if df.empty:
-        raise ValueError(f"No data downloaded for {ticker}. Check ticker symbol and date range.")
+def get_data(tickers, start_date, end_date):
+    stock_data: Dict[str, pd.DataFrame] = {}
+    for ticker in tickers:
+        print(f"Downloading and preprocessing data for {ticker}...")
+        df = yf.download(ticker, start=start_date, end=end_date)
+        if df.empty:
+            raise ValueError(f"No data downloaded for {ticker}. Check ticker symbol and date range.")
 
-    # Flatten MultiIndex columns if they exist, common for single ticker downloads
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
 
-    df.reset_index(inplace=True)  # Make 'Date' a column
-    print(f"Successfully downloaded {len(df)} data points.")
-    return df
+        df.reset_index(inplace=True)
+        print(f"Successfully downloaded {len(df)} data points.")
+        stock_data[ticker] = df
+    return stock_data
 
 
 def load_data_from_excel(filepath:str, df_name: str):

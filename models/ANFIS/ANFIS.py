@@ -1,15 +1,7 @@
 from typing import Optional
 
-import numpy as np
-import pandas as pd
 import torch
-from torch import nn, from_numpy
-from torch.optim import Optimizer
-from torch.utils.data import TensorDataset, DataLoader
-from torchmetrics.functional import r2_score
-from tqdm import tqdm
-
-from utils.plotter import plot_actual_vs_predicted
+from torch import nn
 from models.ANFIS.AbstractANFIS import AbstractANFIS
 
 

@@ -2,87 +2,23 @@ import pandas as pd
 
 y_horizon = 13
 
-def calculate_macd(df: pd.DataFrame, short_window=12, long_window=26, signal_window=9) -> pd.DataFrame:
-    """
-    Calculate MACD (Moving Average Convergence Divergence) for a given DataFrame of close prices.
-
-    Parameters:
-    df (pd.DataFrame): DataFrame containing the stock's close prices with a column 'Close'.
-    short_window (int): The short-term period for the fast EMA (default is 12).
-    long_window (int): The long-term period for the slow EMA (default is 26).
-    signal_window (int): The period for the signal line EMA (default is 9).
-
-    Returns:
-    pd.DataFrame: Original DataFrame with additional columns for MACD and Signal line.
-    """
-    df = df.copy()
-
-    # Calculate the short-term EMA
-    df['EMA_Fast'] = df['Close'].ewm(span=short_window, adjust=False).mean()
-
-    # Calculate the long-term EMA
-    df['EMA_Slow'] = df['Close'].ewm(span=long_window, adjust=False).mean()
-
-    # Calculate the MACD line
-    df['MACD'] = df['EMA_Fast'] - df['EMA_Slow']
-
-    # Calculate the Signal line
-    df['MACD_Signal_Line'] = df['MACD'].ewm(span=signal_window, adjust=False).mean()
-
-    return df[['MACD', 'MACD_Signal_Line']]
+def calculate_vanilla_macd(series, slow=26, fast=12, signal=9):
+    ema_fast = series.ewm(span=fast, adjust=False).mean()
+    ema_slow = series.ewm(span=slow, adjust=False).mean()
+    macd = ema_fast - ema_slow
+    signal_line = macd.ewm(span=signal, adjust=False).mean()
+    return macd, signal_line
 
 
-def calculate_ideal_macd(df: pd.DataFrame, short_window=12, long_window=26, signal_window=9) -> pd.DataFrame:
-    ret = calculate_macd(df.shift(-y_horizon), short_window, long_window, signal_window)
-    return ret.rename(columns={'MACD': 'Ideal_MACD', 'MACD_Signal_Line': 'Ideal_MACD_Signal_Line'})
+def calculate_hindsight_macd(series, slow=26, fast=12, signal=9):
+    return calculate_vanilla_macd(series.shift(-y_horizon), fast, slow, signal)
 
 
-def calculate_predicted_macd(df, predictions_df, short_window=12, long_window=26, signal_window=9):
-    """
-    Calculate the MACD using actual and predicted close prices for a given stock.
+def calculate_volatility(series, window=5):
+    return series.pct_change().rolling(window=window).std()
 
-    Parameters:
-    df (pd.DataFrame): DataFrame containing the actual close prices with a 'Close' column.
-    predictions_df (pd.DataFrame): DataFrame containing predicted close prices for up to 13 days ahead.
-    short_window (int): The short EMA window length (default is 12).
-    long_window (int): The long EMA window length (default is 26).
-    signal_window (int): The signal line EMA window length (default is 9).
-
-    Returns:
-    pd.DataFrame: Original DataFrame with added MACD and Signal columns.
-    """
-    results = {
-        'Date': [],
-        'Predicted_MACD': [],
-        'Predicted_MACD_Signal_Line': []
-    }
-
-    for date in df.index:
-        # Retrieve historical close prices up to the current date
-        historical_prices = df.loc[:date, 'Close']
-
-        # Retrieve future predictions for the current date
-        if date in predictions_df.index:
-            future_predictions = predictions_df.loc[date].values
-        else:
-            future_predictions = []
-
-        # Combine historical closes with future predictions
-        combined_series = pd.Series(list(historical_prices) + list(future_predictions))
-
-        ema_fast = combined_series.ewm(span=short_window, adjust=False).mean()
-        ema_slow = combined_series.ewm(span=long_window, adjust=False).mean()
-        macd = ema_fast - ema_slow
-        macd_signal_line = macd.ewm(span=signal_window, adjust=False).mean()
-
-        results['Date'].append(date)
-        results['Predicted_MACD'].append(macd.iloc[-1])
-        results['Predicted_MACD_Signal_Line'].append(macd_signal_line.iloc[-1])
-
-    results = pd.DataFrame(results).set_index('Date')
-
-    return results
-
+def calculate_roc(series, window=3):
+    return series.pct_change(periods=window)
 
 def calculate_rsi(df, period=14) -> pd.DataFrame:
     """
@@ -95,27 +31,15 @@ def calculate_rsi(df, period=14) -> pd.DataFrame:
     Returns:
     pd.DataFrame: Original DataFrame with an additional column for RSI.
     """
-    df = df.copy()
-
-    # Calculate the price differences
     delta = df['Close'].diff()
-
-    # Separate gains and losses
     gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-
-    # Calculate the Relative Strength (RS)
     rs = gain / loss
-
-    # Calculate RSI
-    df['RSI'] = 100 - (100 / (1 + rs))
-
-    return df[['RSI']]
+    return 100 - (100 / (1 + rs))
 
 
 def calculate_ideal_rsi(df, period=14) -> pd.DataFrame:
-    ret = calculate_rsi(df.shift(-y_horizon), period)
-    return ret.rename(columns={'RSI': 'Ideal_RSI'})
+    return calculate_rsi(df.shift(-y_horizon), period)
 
 
 def calculate_predicted_rsi(df, predictions_df, period=28):
@@ -365,3 +289,16 @@ def calculate_predicted_stochastic(df, predictions_df, period=14):
     results = pd.DataFrame(results).set_index('Date')
 
     return results
+
+def calculate_bollinger_bands(series, window=20, num_std_dev=2):
+    """Calculates Bollinger Bands."""
+    rolling_mean = series.rolling(window=window).mean()
+    rolling_std = series.rolling(window=window).std()
+    upper_band = rolling_mean + (rolling_std * num_std_dev)
+    lower_band = rolling_mean - (rolling_std * num_std_dev)
+    return upper_band, lower_band
+
+def calculate_bollinger_width(series, window=20, num_std_dev=2):
+    """Calculates the width of the Bollinger Bands."""
+    upper_band, lower_band = calculate_bollinger_bands(series, window, num_std_dev)
+    return ((upper_band - lower_band) / series.rolling(window=window).mean()) * 100 # Normalized
