@@ -162,7 +162,6 @@ def get_simulation_insights(sim_results, initial_investment):
     return insights
 
 
-# --- NEW ---
 def plot_comparison_graph(strategy_perf, benchmark_perf, mc_mean_projection, tickers):
     """Plots the historical strategy performance against the benchmark and adds the MC projection."""
     plt.figure(figsize=(14, 7))
