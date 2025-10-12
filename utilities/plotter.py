@@ -67,6 +67,27 @@ def plot_table(fold_results, title: str="RMSE", save_path: Optional[str] = None)
                     bbox_inches='tight', pad_inches=0)
 
 
+def plot_r2_table(result, save_path: Optional[str] = None):
+    fig, ax = plt.subplots(figsize=(6, 3)) # Adjust figsize as needed
+    ax.axis('tight')
+    ax.axis('off')
+    table = ax.table(cellText=result,
+                     colLabels=['RMSE','R^2'],
+                     loc='center',
+                     cellLoc='center')
+
+    table.auto_set_font_size(False)
+    table.set_fontsize(12)
+    table.scale(1.2, 1.2) # Adjust scale to make it larger or smaller
+
+    # 4. Add a title and show the plot
+    plt.title(f"R^2 Table Score", fontsize=16, pad=20)
+    fig.tight_layout()
+    if save_path is not None:
+        fig.savefig(os.path.join(save_path),
+                    bbox_inches='tight', pad_inches=0)
+
+
 def plot_predicted_comparison(df):
     """
     Generates a plot to compare the Predicted ANFIS model against the benchmarks.
@@ -102,42 +123,6 @@ def plot_predicted_comparison(df):
     plt.tight_layout(rect=[0, 0.03, 1, 0.96])
     plt.show()
 
-
-# --- Graph 2: Comparing the Compensated MACD Model ---
-def plot_compensated_comparison(df):
-    """
-    Generates a plot to compare the Compensated ANFIS model against the benchmarks.
-    """
-    # Create a second, separate figure
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(18, 10), sharex=True, gridspec_kw={'height_ratios': [2, 3]})
-    fig.suptitle('Comparison with Model 4: Compensated ANFIS MACD', fontsize=16)
-
-    # Panel 1: Stock Closing Price for context
-    ax1.plot(df['Date'], df['Close'], label='Close Price', color='blue', alpha=0.8)
-    ax1.set_ylabel('Price', fontsize=12)
-    ax1.set_title('Stock Price (Test Period)', fontsize=14)
-    ax1.legend()
-    ax1.grid(True)
-
-    # Panel 2: MACD Comparison
-    ax2.plot(df['Date'], df['MACD_Vanilla'], label='Model 1: Vanilla (Lagging)', color='orange', linestyle='--',
-             linewidth=1.5)
-    ax2.plot(df['Date'], df['MACD_Hindsight'], label='Model 2: Hindsight (Ideal Benchmark)', color='black',
-             linewidth=2.5)
-    ax2.plot(df['Date'], df['MACD_Compensated'], label='Model 4: Compensated ANFIS', color='red', alpha=0.9,
-             linewidth=1.5)
-
-    ax2.axhline(0, color='grey', linestyle='--', linewidth=1)  # Zero line for crossovers
-    ax2.set_ylabel('MACD Value', fontsize=12)
-    ax2.set_xlabel('Date', fontsize=12)
-    ax2.set_title('MACD Indicator Comparison', fontsize=14)
-    ax2.legend()
-    ax2.grid(True)
-    plt.savefig(os.path.join("img/compensated_macd.jpg"),
-                bbox_inches='tight', pad_inches=0)
-
-    plt.tight_layout(rect=[0, 0.03, 1, 0.96])
-    plt.show()
 
 def get_simulation_insights(sim_results, initial_investment):
     mean_return = np.mean(sim_results)

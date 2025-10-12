@@ -1,17 +1,20 @@
-import os
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 import numpy as np
 import pandas as pd
 import yfinance as yf
 from numpy import ndarray, dtype
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import MinMaxScaler
 
-from trade_utils.trading_indicator import target_log_return, log_return, intraday_log_return, over_night_return, \
+from trading.features import calculate_rsi, calculate_bollinger_width, calculate_vanilla_macd, calculate_hindsight_macd
+from trading.trading_indicator import target_log_return, log_return, intraday_log_return, over_night_return, \
     day_range, notional_traded, notional_traded_change, up_days_count, momentum, momentum_change, returns_std, \
     coefficient_of_variation
+from constants import Y_HORIZON
 
 
-def get_data(tickers, start_date, end_date):
+def get_data(tickers: List[str], start_date: str, end_date: str):
     stock_data: Dict[str, pd.DataFrame] = {}
     for ticker in tickers:
         print(f"Downloading and preprocessing data for {ticker}...")
@@ -27,7 +30,43 @@ def get_data(tickers, start_date, end_date):
         stock_data[ticker] = df
     return stock_data
 
+def prepare_data(df, feature_cols: List[str], target_col: str, rolling_window:bool=False) -> tuple[
+    Any, Any, Any, Any, MinMaxScaler, MinMaxScaler, Any, Any]:
+    df['MACD_Vanilla'], df['Signal_Vanilla'] = calculate_vanilla_macd(df['Close'])
+    df['MACD_Hindsight'], _ = calculate_hindsight_macd(df['Close'])
+    df['RSI'] = calculate_rsi(df, 14)
+    df['BB_Width'] = calculate_bollinger_width(df['Close'], window=20)
+    if rolling_window:
+        target_cols = [f'Close_t+{i + 1}' for i in range(Y_HORIZON)]
+        for i in range(Y_HORIZON): df[target_cols[i]] = df['Close'].shift(-(i + 1))
 
+    df.dropna(inplace=True)
+    df.reset_index(drop=True, inplace=True)
+
+    features_df = df[feature_cols]
+    target_series = df[target_col]
+
+    X_train_val, X_test, y_train_val, y_test = train_test_split(
+        features_df, target_series, test_size=0.2, shuffle=False
+    )
+    X_train, X_val, y_train, y_val = train_test_split(
+        X_train_val, y_train_val, test_size=0.2, shuffle=False
+    )
+
+    scaler_X = MinMaxScaler(feature_range=(0,1))
+    X_train_scaled = scaler_X.fit_transform(X_train)
+    X_test_scaled = scaler_X.transform(X_test)
+    X_val_scaled = scaler_X.transform(X_val)
+
+    scaler_y = MinMaxScaler(feature_range=(0,1))
+    y_train_scaled = scaler_y.fit_transform(y_train.values.reshape(-1, 1))
+    y_test_scaled = scaler_y.transform(y_test.values.reshape(-1, 1))
+    y_val_scaled = scaler_y.transform(y_val.values.reshape(-1, 1))
+
+    return X_train_scaled, y_train_scaled, X_val_scaled, y_val_scaled,scaler_X, scaler_y, X_test_scaled, y_test_scaled
+
+
+# --- Manual Data ---
 def load_data_from_excel(filepath:str, df_name: str):
     df = pd.read_excel(filepath)
     df.columns = df.columns.str.replace('^\ufeff', '', regex=True)
@@ -38,6 +77,7 @@ def load_data_from_excel(filepath:str, df_name: str):
     df.dropna(subset=['Close'],inplace=True)
     print(f"Loaded {df_name} data from Excel.")
     return df
+
 
 
 def load_and_engineer_features(filepath, windows):

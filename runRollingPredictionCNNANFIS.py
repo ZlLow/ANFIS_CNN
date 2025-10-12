@@ -3,9 +3,9 @@ import torch
 from sklearn.preprocessing import MinMaxScaler
 from torchmetrics.functional import r2_score
 
-from trade_utils.dataHandler import load_and_engineer_features
-from trade_utils.plotter import plot_actual_vs_predicted, plot_table,plot_graph
-from trade_utils.validation import k_fold, run_rolling_prediction, print_r2_and_rmse
+from utilities.dataHandler import load_and_engineer_features
+from utilities.plotter import plot_actual_vs_predicted, plot_comparison_graph, plot_r2_table
+from evaluation.validation import run_rolling_prediction, print_r2_and_rmse
 
 price_scaler = MinMaxScaler(feature_range=(0, 1))
 
@@ -46,18 +46,37 @@ def main():
     # plot_table(r2_scores,title="R2",save_path="img/k_fold_r2_score.png")
 
     # --- Rolling Forecast Evaluation (Bias-Free) 1 day ---
-    # predictions, actuals, test_dates, historical_data = run_rolling_prediction(X, y, dates, model_params,batch_size=BATCH_SIZE,epochs=EPOCHS,lr=LEARNING_RATE)
-    #
-    # print_r2_and_rmse(predictions, actuals)
-    #
-    # plot_actual_vs_predicted(actuals, predictions, test_dates, title="Rolling Forecast 1 day: Predictions vs Actuals", save_path="img/1_day_rolling_price_prediction.jpg")
+    predictions_1, actuals_1, test_dates, historical_data = run_rolling_prediction(X, y, dates, model_params,batch_size=BATCH_SIZE,epochs=EPOCHS,lr=LEARNING_RATE)
+
+    plot_actual_vs_predicted(actuals_1, predictions_1, test_dates, title="Rolling Forecast 1 day: Predictions vs Actuals", save_path="img/1_day_rolling_price_prediction.jpg")
+
+    predictions_3, actuals_3, test_dates, historical_data = run_rolling_prediction(X, y, dates, model_params,batch_size=BATCH_SIZE,epochs=EPOCHS,lr=LEARNING_RATE, forward_days=3)
+
+    plot_actual_vs_predicted(actuals_3, predictions_3, test_dates, title="Rolling Forecast 3 day: Predictions vs Actuals", save_path="img/3_day_rolling_price_prediction.jpg")
+
+    predictions_5, actuals_5, test_dates, historical_data = run_rolling_prediction(X, y, dates, model_params,batch_size=BATCH_SIZE,epochs=EPOCHS,lr=LEARNING_RATE, forward_days=5)
+
+    plot_actual_vs_predicted(actuals_5, predictions_5, test_dates, title="Rolling Forecast 5 day: Predictions vs Actuals", save_path="img/5_day_rolling_price_prediction.jpg")
+
+    predictions_10, actuals_10, test_dates, historical_data = run_rolling_prediction(X, y, dates, model_params,batch_size=BATCH_SIZE,epochs=EPOCHS,lr=LEARNING_RATE, forward_days=10)
+
+    plot_actual_vs_predicted(actuals_10, predictions_10, test_dates, title="Rolling Forecast 10 day: Predictions vs Actuals", save_path="img/10_day_rolling_price_prediction.jpg")
 
     # --- Rolling Forecast Evaluation (Bias-Free) 13 day ---
-    predictions, actuals, test_dates, historical_data = run_rolling_prediction(X, y, dates, model_params,batch_size=BATCH_SIZE,epochs=EPOCHS,lr=LEARNING_RATE, forward_days=13)
+    predictions_13, actuals_13, test_dates, historical_data = run_rolling_prediction(X, y, dates, model_params,batch_size=BATCH_SIZE,epochs=EPOCHS,lr=LEARNING_RATE, forward_days=13)
 
-    plot_actual_vs_predicted(actuals, predictions, test_dates, title="Rolling Forecast 13 days: Predictions vs Actuals", save_path="img/13_days_rolling_price_prediction.jpg")
+    plot_actual_vs_predicted(actuals_13, predictions_13, test_dates, title="Rolling Forecast 13 days: Predictions vs Actuals", save_path="img/13_days_rolling_price_prediction.jpg")
+    predictions = [predictions_1, predictions_3, predictions_5, predictions_10, predictions_13]
+    actuals = [actuals_1, actuals_3, actuals_5, actuals_10, actuals_13]
+    results = []
+    for i in range(len(predictions)):
+        rmse = np.sqrt(np.mean((predictions[i] - actuals[i]) ** 2))
+        r2 = r2_score(torch.tensor(actuals[i]), torch.tensor(predictions[i]))
+        results.append([f"{rmse:.6f}, {r2:.6f}"])
 
-    print_r2_and_rmse(predictions, actuals)
+    plot_r2_table(results,"img/r2_predictions_comparison.png")
+
+
 
 
 

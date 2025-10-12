@@ -1,14 +1,5 @@
-from typing import Optional
-
-import numpy as np
-import torch
-from sklearn.model_selection import KFold
-from sklearn.preprocessing import MinMaxScaler
-from torch import nn
-from torch.utils.data import TensorDataset, DataLoader
 from torchmetrics.functional import r2_score
 
-from models.ANFIS.AbstractANFIS import AbstractANFIS
 from models.ANFIS.CNNANFIS import HybridCnnAnfis
 
 # trainer.py
@@ -20,8 +11,6 @@ from sklearn.preprocessing import MinMaxScaler
 from torch.utils.data import TensorDataset, DataLoader
 from tqdm import tqdm
 from sklearn.metrics import r2_score
-
-from trade_utils.plotter import plot_actual_vs_predicted
 
 
 def k_fold(k_folds, X, y, model_params, epochs, batch_size, lr):
@@ -201,7 +190,9 @@ def run_rolling_prediction(X, y, dates, model_params, epochs, batch_size, lr, fo
 def print_r2_and_rmse(predictions, actuals):
     rmse = np.sqrt(np.mean((predictions - actuals) ** 2))
     r2 = r2_score(torch.tensor(actuals), torch.tensor(predictions))
+    pearson = np.corrcoef(predictions, actuals)[0, 1]
 
     print(f"\n--- Rolling Forecast Results ---")
-    print(f"Final RMSE on Test Set: ${rmse:.2f}")
-    print(f"Final R2 on Test Set: {r2:.4f}")
+    print(f"Final RMSE on Test Set: ${rmse:.6f}")
+    print(f"Final R2 on Test Set: {r2:.6f}")
+    print(f"FInal Pearson on Test Set: {pearson:.6f}")

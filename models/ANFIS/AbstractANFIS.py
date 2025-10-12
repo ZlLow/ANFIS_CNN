@@ -2,21 +2,18 @@ from abc import ABC, abstractmethod
 from typing import Optional
 
 import numpy as np
-import pandas as pd
 import torch
+from sklearn.metrics import r2_score
 from sklearn.preprocessing import MinMaxScaler
 from torch import nn, from_numpy, Tensor
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from torch.utils.data import DataLoader
-from torchmetrics.functional import r2_score
+from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
-
-from trade_utils.plotter import plot_actual_vs_predicted
 
 
 class AbstractANFIS(ABC, nn.Module):
-    def __init__(self, input_dim: int, num_mfs: int, num_rules: int, criterion: Optional[nn.Module] = None ):
+    def __init__(self, input_dim: int, num_mfs: int, num_rules: int, criterion: Optional[nn.Module] = None, feature_scaler: Optional[MinMaxScaler] = None, target_scaler: Optional[MinMaxScaler] = None):
         super(AbstractANFIS, self).__init__()
         self.input_dim = input_dim
         self.num_mfs = num_mfs
@@ -24,7 +21,8 @@ class AbstractANFIS(ABC, nn.Module):
 
         # --- Optimizer ---
         self.optimizer = None
-        self.scaler = MinMaxScaler(feature_range=(0, 1))
+        self.feature_scaler = MinMaxScaler(feature_range=(0, 1)) if feature_scaler is None else feature_scaler
+        self.target_scaler = MinMaxScaler(feature_range=(0, 1)) if target_scaler is None else target_scaler
         self.criterion = nn.MSELoss(reduction='mean') if criterion is None else criterion
 
         # --- Layer 1: Fuzzification ---
@@ -38,31 +36,34 @@ class AbstractANFIS(ABC, nn.Module):
     def forward(self, x):
         pass
 
-    def fit(self, train_loader: DataLoader, optimizer: Optional[Optimizer],
-            x_val_tensor: Optional[Tensor] = None, y_val_tensor: Optional[Tensor] = None,
-            epochs: int = 300, fold: int = 0):
+    def fit(self, features_X, target_Y, optimizer: Optional[Optimizer], batch_size = 32, epochs= 50):
         self.optimizer = optimizer
 
-        # --- ADD THIS: Initialize the Learning Rate Scheduler ---
-        # It will reduce the LR if `val_loss` does not improve for 10 epochs.
         scheduler = ReduceLROnPlateau(optimizer, 'min', patience=10, factor=0.5, min_lr=1e-6)
 
-        epoch_bar = tqdm(range(epochs), desc=f"Fold {fold + 1} Training", leave=False)
+
+        x_val_tensor = torch.tensor(features_X, dtype=torch.float32).to(self.device)
+        y_val_tensor = torch.tensor(target_Y, dtype=torch.float32).to(self.device)
+
+        dataset = TensorDataset(x_val_tensor, y_val_tensor)
+        loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+
+        epoch_bar = tqdm(range(epochs), desc=f"Training Model", leave=True, dynamic_ncols=True, position=0)
         for _ in epoch_bar:
             self.train()
-            epoch_train_loss = 0.0
-            # Wrap train_loader with tqdm for the inner batch loop
-            for batch_X, batch_y in train_loader:
+            epoch_loss = 0.0
+            num_batches = 0
+            for batch_X, batch_y in loader:
                 optimizer.zero_grad()
                 outputs = self(batch_X)
                 loss = self.criterion(outputs, batch_y)
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0)
                 optimizer.step()
-                epoch_train_loss += loss.item()
+                epoch_loss += loss.item()
+                num_batches += 1
 
             # Calculate losses and update the epoch progress bar with live metrics
-            avg_epoch_train_loss = np.sqrt(epoch_train_loss / len(train_loader))
+            avg_epoch_train_loss = np.sqrt(epoch_loss / len(loader))
             if x_val_tensor is None or y_val_tensor is None:
                 epoch_bar.set_postfix(train_rmse=f"{avg_epoch_train_loss:.4f}")
             else:
@@ -71,7 +72,7 @@ class AbstractANFIS(ABC, nn.Module):
                     val_output = self(x_val_tensor)
                     val_loss = torch.sqrt(self.criterion(val_output, y_val_tensor)).item()
 
-                # --- ADD THIS: Step the scheduler with the validation loss ---
+                # Step the scheduler with the validation loss
                 scheduler.step(val_loss)
 
                 # Use set_postfix to display the latest metrics, including the current learning rate
@@ -79,20 +80,30 @@ class AbstractANFIS(ABC, nn.Module):
                 epoch_bar.set_postfix(train_rmse=f"{avg_epoch_train_loss:.4f}",
                                       val_rmse=f"{val_loss:.4f}",
                                       lr=f"{current_lr:.1e}")
+                epoch_bar.update()
 
-    def predict(self, x_val_tensor: Tensor, y_val_tensor: Tensor,target_scaler, dates: Optional[str] = None, save_path: Optional[str] = None):
+
+        return self, self.feature_scaler, self.target_scaler
+
+    def predict(self, features_X, target_Y):
         self.eval()
+        x_val_tensor = torch.tensor(features_X, dtype=torch.float32).to(self.device)
+        y_val_tensor = torch.tensor(target_Y, dtype=torch.float32).to(self.device)
         with torch.no_grad():
-            val_output_scaled = self(x_val_tensor)
+            val_pred_scaled = self(x_val_tensor)
+            rmse_scaled = torch.sqrt(self.criterion(val_pred_scaled, y_val_tensor)).item()
 
-        val_output_prices = target_scaler.inverse_transform(val_output_scaled.numpy())
-        y_val_prices = target_scaler.inverse_transform(y_val_tensor.numpy())
+            val_preds_np = val_pred_scaled.cpu().numpy().flatten()  # Move to CPU for numpy operations
+            y_val_np = y_val_tensor.cpu().numpy().flatten()  # Move to CPU for numpy operations
 
-        val_loss_unscaled = np.sqrt(
-            nn.MSELoss()(torch.tensor(val_output_prices), torch.tensor(y_val_prices))).item()
-        print(f"r2 score: {r2_score(from_numpy(y_val_prices), from_numpy(val_output_prices)):6f}")
-        plot_actual_vs_predicted(y_val_prices, val_output_prices,dates=dates, save_path=save_path)
-        return val_loss_unscaled, r2_score(from_numpy(y_val_prices), from_numpy(val_output_prices))
+            if np.std(val_preds_np) == 0 or np.std(y_val_np) == 0:
+                pearson_correlation_score = 0.0  # Or -1.0, or a penalty value
+            else:
+                pearson_correlation_score = np.corrcoef(val_preds_np, y_val_np)[0, 1]
+
+            r2 = r2_score(y_val_np, val_preds_np)
+
+        return val_preds_np, rmse_scaled, pearson_correlation_score, r2
 
 class GeneralizedBellMembershipFunc(nn.Module):
     def __init__(self, num_mfs, input_dim):

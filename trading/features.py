@@ -14,6 +14,52 @@ def calculate_hindsight_macd(series, slow=26, fast=12, signal=9):
     return calculate_vanilla_macd(series.shift(-y_horizon), fast, slow, signal)
 
 
+def calculate_predicted_macd(df, predictions_df, short_window=12, long_window=26, signal_window=9):
+    """
+    Calculate the MACD using actual and predicted close prices for a given stock.
+
+    Parameters:
+    df (pd.DataFrame): DataFrame containing the actual close prices with a 'Close' column.
+    predictions_df (pd.DataFrame): DataFrame containing predicted close prices for up to 13 days ahead.
+    short_window (int): The short EMA window length (default is 12).
+    long_window (int): The long EMA window length (default is 26).
+    signal_window (int): The signal line EMA window length (default is 9).
+
+    Returns:
+    pd.DataFrame: Original DataFrame with added MACD and Signal columns.
+    """
+    results = {
+        'Date': [],
+        'Predicted_MACD': [],
+        'Predicted_MACD_Signal_Line': []
+    }
+
+    for date in df.index:
+        # Retrieve historical close prices up to the current date
+        historical_prices = df.loc[:date, 'Close']
+
+        # Retrieve future predictions for the current date
+        if date in predictions_df.index:
+            future_predictions = predictions_df.loc[date].values
+        else:
+            future_predictions = []
+
+        # Combine historical closes with future predictions
+        combined_series = pd.Series(list(historical_prices) + list(future_predictions))
+
+        ema_fast = combined_series.ewm(span=short_window, adjust=False).mean()
+        ema_slow = combined_series.ewm(span=long_window, adjust=False).mean()
+        macd = ema_fast - ema_slow
+        macd_signal_line = macd.ewm(span=signal_window, adjust=False).mean()
+
+        results['Date'].append(date)
+        results['Predicted_MACD'].append(macd.iloc[-1])
+        results['Predicted_MACD_Signal_Line'].append(macd_signal_line.iloc[-1])
+
+    results = pd.DataFrame(results).set_index('Date')
+
+    return results
+
 def calculate_volatility(series, window=5):
     return series.pct_change().rolling(window=window).std()
 

@@ -1,23 +1,18 @@
+from typing import Optional
+
+import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
+from sklearn.metrics import r2_score
 from sklearn.preprocessing import MinMaxScaler
+from torch.optim import Optimizer
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import TensorDataset, DataLoader
 from tqdm import tqdm
 
-
-class GeneralizedBellMembershipFunc(nn.Module):
-    def __init__(self, num_mfs, input_dim):
-        super(GeneralizedBellMembershipFunc, self).__init__()
-        self.a = nn.Parameter(torch.rand(num_mfs, input_dim) * 0.5 + 0.1)
-        self.b = nn.Parameter(torch.rand(num_mfs, input_dim) * 2 + 0.5)
-        self.c = nn.Parameter(torch.rand(num_mfs, input_dim))
-
-    def forward(self, x):
-        x_unsqueezed = x.unsqueeze(2)
-        a_exp, b_exp, c_exp = self.a.t().unsqueeze(0), self.b.t().unsqueeze(0), self.c.t().unsqueeze(0)
-        b_clamped = torch.clamp(b_exp, min=0.01, max=10.0)
-        base = torch.abs((x_unsqueezed - c_exp) / (a_exp + 1e-6))
-        return 1. / (1. + base ** (2 * b_clamped))
+from models.ANFIS.AbstractANFIS import AbstractANFIS, GeneralizedBellMembershipFunc
+from trading.features import calculate_vanilla_macd, calculate_rsi, calculate_bollinger_width
 
 
 class ConsequentGenerator(nn.Module):
@@ -57,16 +52,11 @@ class ConsequentGenerator(nn.Module):
         return dynamic_params
 
 
-class HybridCnnAnfis(nn.Module):
-    def __init__(self, input_dim, num_mfs, num_rules, firing_conv_filters, consequent_conv_filters,
-                 device=torch.device('cpu'), output_dim=1):
-        super(HybridCnnAnfis, self).__init__()
-        self.input_dim = input_dim
-        self.num_mfs = num_mfs
-        self.num_rules = num_rules
+class HybridCnnAnfis(AbstractANFIS):
+    def __init__(self, input_dim: int, num_mfs, num_rules, firing_conv_filters, consequent_conv_filters,
+                 feature_scaler: Optional[MinMaxScaler] = None, target_scaler: Optional[MinMaxScaler] = None, device=torch.device('cpu')):
+        super().__init__(input_dim=input_dim, num_mfs=num_mfs, num_rules=num_rules, feature_scaler=feature_scaler, target_scaler=target_scaler)
         self.device = device
-        self.output_dim = output_dim
-
         # Layer 1: Fuzzification
         self.membership_funcs = GeneralizedBellMembershipFunc(num_mfs, input_dim)
 
@@ -85,79 +75,119 @@ class HybridCnnAnfis(nn.Module):
             input_dim, num_mfs, num_rules, consequent_conv_filters
         ).to(device)
 
-        # Final projection layer for multi-step output
-        self.output_projection = nn.Linear(1, self.output_dim).to(device)
+        self.output_projection = nn.Linear(1, 1).to(device)
 
     def forward(self, x):
         batch_size = x.shape[0]
-        if self.training and batch_size == 1:
-            return self._forward_single(x)
+        # Always run through the standard path unless there's a specific reason for _forward_single
+        # The original code's _forward_single path only removes batch_norm if batch_size == 1
+        # For evaluation during GA, we want consistent behavior.
 
         # Layer 1: Fuzzification
         memberships = self.membership_funcs(x)
 
         # Head 1: Calculate Firing Strengths (w̄ᵢ)
-        firing_features = self.firing_strength_net(memberships).mean(dim=2)
+        # Ensure memberships has appropriate dimensions for Conv1d: (batch_size, input_dim, num_mfs)
+        # It comes out as (batch_size, input_dim, num_mfs) from membership_funcs
+        firing_features = self.firing_strength_net(memberships)
+
+        # Mean across the num_mfs dimension (the "time" dimension for Conv1d here)
+        firing_features = firing_features.mean(dim=2)
+
         firing_strength_logits = self.firing_fc(firing_features)
-        normalized_firing_strengths = self.softmax(self.batch_norm(firing_strength_logits))
+
+        # Apply BatchNorm only if batch_size > 1, otherwise it will error
+        if batch_size > 1:
+            normalized_firing_strengths = self.softmax(self.batch_norm(firing_strength_logits))
+        else:
+            normalized_firing_strengths = self.softmax(firing_strength_logits)
 
         # Head 2: Generate Consequent Parameters (a, b, c...)
         dynamic_consequent_params = self.consequent_generator(memberships)
 
         # Layer 4 & 5: Consequent Calculation and Aggregation
+        # Add a column of ones to x for the constant term in the consequent
         x_aug = torch.cat([x, torch.ones(batch_size, 1, device=self.device)], dim=1).unsqueeze(1)
 
-        rule_outputs = (dynamic_consequent_params * x_aug).sum(dim=2)
+        # Multiply consequent parameters by augmented input and sum
+        # dynamic_consequent_params: (batch_size, num_rules, input_dim + 1)
+        # x_aug: (batch_size, 1, input_dim + 1)
+        # The broadcasting works here: x_aug is applied to each rule's params
+        rule_outputs = (dynamic_consequent_params * x_aug).sum(dim=2)  # Result (batch_size, num_rules)
+
+        # Weighted sum of rule outputs based on firing strengths
+        # normalized_firing_strengths: (batch_size, num_rules)
+        # rule_outputs: (batch_size, num_rules)
         aggregated_output = (normalized_firing_strengths * rule_outputs).sum(dim=1, keepdim=True)
+        return aggregated_output
 
-        # Project to the desired output dimension (for multi-step forecasting)
-        final_output = self.output_projection(aggregated_output)
+    def rolling_prediction(self, initial_unscaled_close_history, train_X_scaled, train_y_scaled,
+                           X_test_scaled, y_test_scaled, test_dates,
+                           look_forward_period):
+        all_predictions, all_actuals, all_dates = [], [], []
 
-        return final_output
+        # History will be managed with scaled data
+        historical_X_scaled = train_X_scaled.copy()
+        historical_y_scaled = train_y_scaled.copy()
 
-    def _forward_single(self, x):
-        batch_size = x.shape[0]
-        memberships = self.membership_funcs(x)
-        firing_features = self.firing_strength_net(memberships).mean(dim=2)
-        firing_strength_logits = self.firing_fc(firing_features)
-        normalized_firing_strengths = self.softmax(firing_strength_logits)
-        dynamic_consequent_params = self.consequent_generator(memberships)
-        x_aug = torch.cat([x, torch.ones(batch_size, 1, device=self.device)], dim=1).unsqueeze(1)
-        rule_outputs = (dynamic_consequent_params * x_aug).sum(dim=2)
-        aggregated_output = (normalized_firing_strengths * rule_outputs).sum(dim=1, keepdim=True)
-        final_output = self.output_projection(aggregated_output)
-        return final_output
+        # Unscaled history is needed ONLY for dynamic feature calculation
+        unscaled_close_history = initial_unscaled_close_history.copy()
 
+        for i in tqdm(range(0, len(X_test_scaled), look_forward_period), desc="Rolling Prediction Windows"):
+            # 1. Retrain the model on all scaled data seen so far
+            print(f"\nRetraining model with {len(historical_X_scaled)} data points...")
 
-def train_anfis_model(features_X, target_Y, model_params, epochs=50, lr=0.001, batch_size=32):
-    scaler_X = MinMaxScaler()
-    scaler_y = MinMaxScaler()
+            # 2. Initialize for the prediction window
+            last_features_scaled = historical_X_scaled[-1, :].reshape(1, -1)
+            temp_unscaled_close_history = unscaled_close_history.copy()
 
-    X_scaled = scaler_X.fit_transform(features_X)
-    # The target_Y can be 1D or 2D, MinMaxScaler handles both
-    y_scaled = scaler_y.fit_transform(target_Y if len(target_Y.shape) > 1 else target_Y.reshape(-1, 1))
+            for j in range(look_forward_period):
+                current_idx = i + j
+                if current_idx >= len(X_test_scaled): break
 
-    dataset = TensorDataset(torch.tensor(X_scaled, dtype=torch.float32),
-                            torch.tensor(y_scaled, dtype=torch.float32))
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True)
+                # 3. Predict one step ahead (output is scaled)
+                self.eval()
+                with torch.no_grad():
+                    features_tensor = torch.tensor(last_features_scaled, dtype=torch.float32).to(self.device)
+                    scaled_prediction = self(features_tensor)
 
-    model = HybridCnnAnfis(input_dim=features_X.shape[1], **model_params)
-    criterion = nn.MSELoss(reduction='mean')
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-5)
-    epoch_bar = tqdm(range(epochs), desc="Training Multi-Step Model", leave=False)
+                # 4. Inverse transform prediction to get unscaled value for feature calculation
+                unscaled_prediction = self.target_scaler.inverse_transform(scaled_prediction.cpu().numpy())[0, 0]
+                all_predictions.append(unscaled_prediction)
+                temp_unscaled_close_history = pd.concat([temp_unscaled_close_history, pd.Series([unscaled_prediction])],
+                                                        ignore_index=True)
 
-    for epoch in epoch_bar:
-        epoch_loss = 0.0
-        num_batches = 0
-        for batch_X, batch_y in loader:
-            optimizer.zero_grad()
-            outputs = model(batch_X)
-            loss = criterion(outputs, batch_y)
-            loss.backward()
-            optimizer.step()
-            epoch_loss += loss.item()
-            num_batches += 1
+                # 5. Store actual values for metrics
+                unscaled_actual = self.target_scaler.inverse_transform(y_test_scaled[current_idx].reshape(-1, 1))[0, 0]
+                all_actuals.append(unscaled_actual)
+                all_dates.append(test_dates.iloc[current_idx])
 
-        epoch_bar.set_postfix(train_rmse=f"{epoch_loss / num_batches:.6f}")
+                # 6. Calculate next features using the unscaled history
+                temp_df = pd.DataFrame({'Close': temp_unscaled_close_history})
+                macd, signal = calculate_vanilla_macd(temp_df['Close'])
+                rsi = calculate_rsi(temp_df)
+                bb_width = calculate_bollinger_width(temp_df['Close'])
 
-    return model, scaler_X, scaler_y
+                next_features_unscaled = np.array(
+                    [unscaled_prediction, macd.iloc[-1], signal.iloc[-1], rsi.iloc[-1], bb_width.iloc[-1]]).reshape(1,
+                                                                                                                    -1)
+
+                # 7. Scale the new features to be the input for the next prediction
+                if not np.all(np.isfinite(next_features_unscaled)):
+                    print(f"Warning: NaN/inf features at step {current_idx}. Using last valid features.")
+                else:
+                    last_features_scaled = self.feature_scaler.transform(next_features_unscaled)
+
+            # 8. Update history with actual scaled data from the test set for the next retraining cycle
+            actual_X_chunk_scaled = X_test_scaled[i: i + look_forward_period]
+            actual_y_chunk_scaled = y_test_scaled[i: i + look_forward_period]
+
+            historical_X_scaled = np.concatenate((historical_X_scaled, actual_X_chunk_scaled), axis=0)
+            historical_y_scaled = np.concatenate((historical_y_scaled, actual_y_chunk_scaled), axis=0)
+
+            # Also update the unscaled history with the true unscaled values
+            actual_unscaled_chunk = self.target_scaler.inverse_transform(actual_y_chunk_scaled)
+            unscaled_close_history = pd.concat([unscaled_close_history, pd.Series(actual_unscaled_chunk.flatten())],
+                                               ignore_index=True)
+
+        return np.array(all_predictions), np.array(all_actuals), all_dates
