@@ -25,7 +25,6 @@ def get_data(tickers: List[str], start_date: str, end_date: str):
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
 
-        df.reset_index(inplace=True)
         print(f"Successfully downloaded {len(df)} data points.")
         stock_data[ticker] = df
     return stock_data

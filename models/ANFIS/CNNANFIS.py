@@ -1,14 +1,10 @@
 from typing import Optional
+from sklearn.preprocessing import MinMaxScaler
 
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
-from sklearn.metrics import r2_score
-from sklearn.preprocessing import MinMaxScaler
-from torch.optim import Optimizer
-from torch.optim.lr_scheduler import ReduceLROnPlateau
-from torch.utils.data import TensorDataset, DataLoader
 from tqdm import tqdm
 
 from models.ANFIS.AbstractANFIS import AbstractANFIS, GeneralizedBellMembershipFunc
@@ -62,9 +58,9 @@ class HybridCnnAnfis(AbstractANFIS):
 
         # Head 1: Firing Strength Network
         self.firing_strength_net = nn.Sequential(
-            nn.Conv1d(in_channels=self.input_dim, out_channels=firing_conv_filters, kernel_size=2),
+            nn.Conv1d(in_channels=self.input_dim, out_channels=firing_conv_filters, kernel_size=3),
             nn.ReLU(),
-            nn.Dropout(0.1)
+            nn.Dropout(0.1),
         ).to(device)
         self.firing_fc = nn.Linear(firing_conv_filters, num_rules).to(device)
         self.batch_norm = nn.BatchNorm1d(num_rules).to(device)
@@ -120,74 +116,3 @@ class HybridCnnAnfis(AbstractANFIS):
         # rule_outputs: (batch_size, num_rules)
         aggregated_output = (normalized_firing_strengths * rule_outputs).sum(dim=1, keepdim=True)
         return aggregated_output
-
-    def rolling_prediction(self, initial_unscaled_close_history, train_X_scaled, train_y_scaled,
-                           X_test_scaled, y_test_scaled, test_dates,
-                           look_forward_period):
-        all_predictions, all_actuals, all_dates = [], [], []
-
-        # History will be managed with scaled data
-        historical_X_scaled = train_X_scaled.copy()
-        historical_y_scaled = train_y_scaled.copy()
-
-        # Unscaled history is needed ONLY for dynamic feature calculation
-        unscaled_close_history = initial_unscaled_close_history.copy()
-
-        for i in tqdm(range(0, len(X_test_scaled), look_forward_period), desc="Rolling Prediction Windows"):
-            # 1. Retrain the model on all scaled data seen so far
-            print(f"\nRetraining model with {len(historical_X_scaled)} data points...")
-
-            # 2. Initialize for the prediction window
-            last_features_scaled = historical_X_scaled[-1, :].reshape(1, -1)
-            temp_unscaled_close_history = unscaled_close_history.copy()
-
-            for j in range(look_forward_period):
-                current_idx = i + j
-                if current_idx >= len(X_test_scaled): break
-
-                # 3. Predict one step ahead (output is scaled)
-                self.eval()
-                with torch.no_grad():
-                    features_tensor = torch.tensor(last_features_scaled, dtype=torch.float32).to(self.device)
-                    scaled_prediction = self(features_tensor)
-
-                # 4. Inverse transform prediction to get unscaled value for feature calculation
-                unscaled_prediction = self.target_scaler.inverse_transform(scaled_prediction.cpu().numpy())[0, 0]
-                all_predictions.append(unscaled_prediction)
-                temp_unscaled_close_history = pd.concat([temp_unscaled_close_history, pd.Series([unscaled_prediction])],
-                                                        ignore_index=True)
-
-                # 5. Store actual values for metrics
-                unscaled_actual = self.target_scaler.inverse_transform(y_test_scaled[current_idx].reshape(-1, 1))[0, 0]
-                all_actuals.append(unscaled_actual)
-                all_dates.append(test_dates.iloc[current_idx])
-
-                # 6. Calculate next features using the unscaled history
-                temp_df = pd.DataFrame({'Close': temp_unscaled_close_history})
-                macd, signal = calculate_vanilla_macd(temp_df['Close'])
-                rsi = calculate_rsi(temp_df)
-                bb_width = calculate_bollinger_width(temp_df['Close'])
-
-                next_features_unscaled = np.array(
-                    [unscaled_prediction, macd.iloc[-1], signal.iloc[-1], rsi.iloc[-1], bb_width.iloc[-1]]).reshape(1,
-                                                                                                                    -1)
-
-                # 7. Scale the new features to be the input for the next prediction
-                if not np.all(np.isfinite(next_features_unscaled)):
-                    print(f"Warning: NaN/inf features at step {current_idx}. Using last valid features.")
-                else:
-                    last_features_scaled = self.feature_scaler.transform(next_features_unscaled)
-
-            # 8. Update history with actual scaled data from the test set for the next retraining cycle
-            actual_X_chunk_scaled = X_test_scaled[i: i + look_forward_period]
-            actual_y_chunk_scaled = y_test_scaled[i: i + look_forward_period]
-
-            historical_X_scaled = np.concatenate((historical_X_scaled, actual_X_chunk_scaled), axis=0)
-            historical_y_scaled = np.concatenate((historical_y_scaled, actual_y_chunk_scaled), axis=0)
-
-            # Also update the unscaled history with the true unscaled values
-            actual_unscaled_chunk = self.target_scaler.inverse_transform(actual_y_chunk_scaled)
-            unscaled_close_history = pd.concat([unscaled_close_history, pd.Series(actual_unscaled_chunk.flatten())],
-                                               ignore_index=True)
-
-        return np.array(all_predictions), np.array(all_actuals), all_dates

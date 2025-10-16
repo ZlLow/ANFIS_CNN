@@ -5,23 +5,22 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
-import plotly.graph_objs as go
 
-def plot_actual_vs_predicted(actual, predicted, dates: Optional = None,title: Optional[str] = "Stock Price Prediction using Hybrid CNN-ANFIS", save_path: Optional[str] = None):
+def plot_actual_vs_predicted(actual, predicted, model: Optional[str] = "CNN-ANFIS", dates: Optional = None,title: Optional[str] = "Stock Price Prediction using Hybrid CNN-ANFIS", save_path: Optional[str] = None):
     plt.figure(figsize=(15, 7))
     plt.title(title)
     if dates is not None:
         plt.plot(dates,actual, label='Actual Price', color='blue', alpha=0.7)
-        plt.plot(dates,predicted, label='Hybrid CNN-ANFIS Predicted Price', color='red')
+        plt.plot(dates,predicted, label=f'{model} Predicted Price', color='red')
         plt.xlabel("Time step (Days)")
     else:
         plt.plot(actual, label='Actual Price', color='blue', alpha=0.7)
-        plt.plot(predicted, label='Hybrid CNN-ANFIS Predicted Price', color='red')
+        plt.plot(predicted, label=f'{model} Predicted Price', color='red')
         plt.xlabel("Dates")
     plt.ylabel("Close Price")
     plt.legend()
     if save_path is not None:
-        plt.savefig(os.path.join(save_path),
+        plt.savefig(os.path.join(f"img/{save_path}"),
                     bbox_inches='tight', pad_inches=0)
     plt.grid(True)
     plt.show()
@@ -33,7 +32,7 @@ def plot_learning_curves(train_losses, val_losses, title="Learning Curves", save
     plt.legend()
     plt.title(title)
     if save_path is not None:
-        plt.savefig(os.path.join(save_path),
+        plt.savefig(os.path.join(f"img/{save_path}"),
                     bbox_inches='tight', pad_inches=0)
     plt.grid(True)
 
@@ -63,7 +62,7 @@ def plot_table(fold_results, title: str="RMSE", save_path: Optional[str] = None)
     plt.title(f"K-Fold {title} Table Score", fontsize=16, pad=20)
     fig.tight_layout()
     if save_path is not None:
-        fig.savefig(os.path.join(save_path),
+        fig.savefig(os.path.join(f"img/{save_path}"),
                     bbox_inches='tight', pad_inches=0)
 
 
@@ -84,17 +83,17 @@ def plot_r2_table(result, save_path: Optional[str] = None):
     plt.title(f"R^2 Table Score", fontsize=16, pad=20)
     fig.tight_layout()
     if save_path is not None:
-        fig.savefig(os.path.join(save_path),
+        fig.savefig(os.path.join(f"img/{save_path}"),
                     bbox_inches='tight', pad_inches=0)
 
 
-def plot_predicted_comparison(df):
+def plot_predicted_comparison(df, model: Optional[str] = "CNN-ANFIS", save_path: Optional[str] = None):
     """
     Generates a plot to compare the Predicted ANFIS model against the benchmarks.
     """
     # Create a figure with two subplots stacked vertically
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(18, 10), sharex=True, gridspec_kw={'height_ratios': [2, 3]})
-    fig.suptitle('Comparison with Model 3: Predicted ANFIS MACD', fontsize=16)
+    fig.suptitle(f'Comparison with Models: Predicted {model} MACD', fontsize=16)
 
     # Panel 1: Stock Closing Price for context
     ax1.plot(df['Date'], df['Close'], label='Close Price', color='blue', alpha=0.8)
@@ -117,8 +116,9 @@ def plot_predicted_comparison(df):
     ax2.set_title('MACD Indicator Comparison', fontsize=14)
     ax2.legend()
     ax2.grid(True)
-    plt.savefig(os.path.join("img/predicted_macd.jpg"),
-                bbox_inches='tight', pad_inches=0)
+    if save_path is not None:
+        plt.savefig(os.path.join(f"img/{save_path}"),
+                    bbox_inches='tight', pad_inches=0)
 
     plt.tight_layout(rect=[0, 0.03, 1, 0.96])
     plt.show()
@@ -147,12 +147,12 @@ def get_simulation_insights(sim_results, initial_investment):
     return insights
 
 
-def plot_comparison_graph(strategy_perf, benchmark_perf, mc_mean_projection, tickers):
+def plot_comparison_graph(strategy_perf, benchmark_perf, mc_mean_projection, tickers, model: Optional[str] = "CNN-ANFIS", save_path: Optional[str] = None):
     """Plots the historical strategy performance against the benchmark and adds the MC projection."""
     plt.figure(figsize=(14, 7))
 
     # Plot historical performance
-    strategy_perf.plot(label='ANFIS Optimized Strategy', color='blue', lw=2)
+    strategy_perf.plot(label=f'{model} Optimized Strategy', color='blue', lw=2)
     benchmark_perf.plot(label='Equal-Weight Buy & Hold Benchmark', color='gray', linestyle='--', lw=2)
 
     # Create future date index for the projection
@@ -172,6 +172,66 @@ def plot_comparison_graph(strategy_perf, benchmark_perf, mc_mean_projection, tic
     plt.ylabel('Portfolio Value ($)')
     plt.legend()
     plt.grid(True)
-    plt.savefig(os.path.join("img/mc_comparison_graph.jpg"),
-                bbox_inches='tight', pad_inches=0)
+    if save_path is not None:
+        plt.savefig(os.path.join(f"img/{save_path}"),
+                    bbox_inches='tight', pad_inches=0)
+    plt.show()
+
+def plot_mc_simulation(simulated_data, final_values, tickers, initial_investment):
+    """Plots the results of the Monte Carlo simulation."""
+    plt.figure(figsize=(12, 8))
+    mean_final_value = np.mean(final_values)
+    percentile_5 = np.percentile(final_values, 5)
+    percentile_95 = np.percentile(final_values, 95)
+    mean_idx = np.argmin(np.abs(final_values - mean_final_value))
+    p5_idx = np.argmin(np.abs(final_values - percentile_5))
+    p95_idx = np.argmin(np.abs(final_values - percentile_95))
+    special_indices = [mean_idx, p5_idx, p95_idx]
+
+    num_simulations = simulated_data.shape[1]
+    for i in range(num_simulations):
+        if i not in special_indices:
+            plt.plot(simulated_data[:, i], color='lightgray', alpha=0.25, linewidth=0.5)
+
+    plt.plot(simulated_data[:, p95_idx], color='darkorange', linestyle='-', lw=2.5,
+             label=f'95th Percentile Path: ${final_values[p95_idx]:,.2f}')
+    plt.plot(simulated_data[:, mean_idx], color='red', linestyle='-', lw=2.5,
+             label=f'Mean Path: ${final_values[mean_idx]:,.2f}')
+    plt.plot(simulated_data[:, p5_idx], color='black', linestyle='-', lw=2.5,
+             label=f'5th Percentile Path: ${final_values[p5_idx]:,.2f}')
+
+    plt.title(f'Monte Carlo Simulation for Portfolio: {", ".join(tickers)} (1 Year Projection)')
+    plt.xlabel('Trading Days')
+    plt.ylabel('Portfolio Value ($)')
+    plt.grid(True)
+    plt.legend()
+    print("\n--- Monte Carlo Simulation Results ---")
+    print(f"Initial Investment: ${initial_investment:,.2f}")
+    print(f"Mean Expected Portfolio Value after 1 Year: ${mean_final_value:,.2f}")
+    print(f"5% Worst Case Scenario: ${percentile_5:,.2f}")
+    print(f"5% Best Case Scenario: ${percentile_95:,.2f}")
+    if not os.path.exists("img"): os.makedirs("img")
+    plt.savefig(os.path.join("img/mc_simulation_highlighted.jpg"), bbox_inches='tight', pad_inches=0)
+    plt.show()
+
+
+def plot_performance_comparison(historical_performances, tickers, save_path: Optional[str] = None):
+    """Plots a comparison of historical backtesting and Monte Carlo projections."""
+    plt.figure(figsize=(15, 10))
+    colors = plt.cm.jet(np.linspace(0, 1, len(historical_performances)))
+    color_map = {name: color for name, color in zip(historical_performances.keys(), colors)}
+
+    for name, performance in historical_performances.items():
+        plt.plot(performance.index, performance.values, label=f'{name}', color=color_map[name],
+                 linewidth=2)
+
+    plt.title(f'Portfolio Comparison: {", ".join(tickers)}')
+    plt.xlabel('Date')
+    plt.ylabel('Portfolio Value ($)')
+    plt.grid(True)
+    plt.legend()
+    plt.yscale('log')
+    if not os.path.exists("img"): os.makedirs("img")
+    if save_path is not None:
+        plt.savefig(os.path.join(f"img/{save_path}"), bbox_inches='tight', pad_inches=0)
     plt.show()

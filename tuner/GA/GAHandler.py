@@ -3,7 +3,9 @@ import random
 import numpy as np
 import torch
 
+from constants import DEVICE
 from models.ANFIS.CNNANFIS import HybridCnnAnfis
+from models.clustering.HDBScan import get_num_rules_with_hdbscan
 
 
 class Individual:
@@ -67,11 +69,6 @@ def fitness_function_anfis(individual, features_X, target_Y, feature_val_X, targ
     current_batch_size = params['batch_size']
     current_epochs = params['epochs']
 
-    # --- MODIFIED: Added weight for R2 score and re-balanced ---
-    weight_rmse = 0.15
-    weight_pearson = 0.6  # Adjusted from 0.6
-    weight_r2 = 0.25  # Added new weight for R2
-
     model_params = {
         'input_dim': fixed_params['input_dim'],
         'num_mfs': fixed_params['num_mfs'],
@@ -91,12 +88,10 @@ def fitness_function_anfis(individual, features_X, target_Y, feature_val_X, targ
     print(
         f"rmse_error_scaled: {rmse_error_scaled:.6f}, r2_score: {r2:.6f}, pearson_correlation: {pearson_correlation:.6f}, lr: {current_lr:.6f}, batch_size: {current_batch_size:d}, epochs: {current_epochs:d}")
 
-    # Pearson is in [-1, 1], shifting to [0, 2] makes it non-negative
-    shifted_pearson = pearson_correlation + 1
 
     # The goal is to MAXIMIZE fitness.
     # Higher Pearson and R2 are good. Higher RMSE is bad.
-    fitness_score = (weight_pearson * shifted_pearson) + (weight_r2 * r2) - (weight_rmse * rmse_error_scaled)
+    fitness_score = r2
 
     individual.fitness = fitness_score
     individual.rmse = rmse_error_scaled
@@ -237,3 +232,30 @@ def genetic_algorithm_anfis(
 
 
     return best_individual_overall.genome
+
+def run_GA(gene_config_space, population_size, generations, mutation_rate, num_parents,num_elites,X_train_scaled, y_train_scaled, X_val_scaled, y_val_scaled,scaler_X, scaler_y):
+    print("\n --- Running GA to optimize hyper-parameters --- \n")
+    num_rules_from_hdbscan = get_num_rules_with_hdbscan(X_train_scaled)
+    anfis_fixed_params = {
+        'input_dim': X_train_scaled.shape[1],
+        'num_mfs': 3,
+        'num_rules': num_rules_from_hdbscan
+    }
+
+    best_genome = genetic_algorithm_anfis(
+        gene_config_space=gene_config_space,
+        X_train=X_train_scaled, y_train=y_train_scaled,
+        X_val=X_val_scaled, y_val=y_val_scaled,
+        scaler_X=scaler_X,
+        scaler_Y=scaler_y,
+        DEVICE=DEVICE,
+        anfis_fixed_params=anfis_fixed_params,
+        population_size=population_size,
+        generations=generations,
+        mutation_rate=mutation_rate,
+        num_parents_for_crossover=num_parents,
+        num_elites=num_elites,
+    )
+
+    best_genome['num_rules'] = num_rules_from_hdbscan
+    return best_genome

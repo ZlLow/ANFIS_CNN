@@ -1,15 +1,22 @@
 from typing import Optional
 
 import torch
+from sklearn.preprocessing import MinMaxScaler
 from torch import nn
+
+from constants import DEVICE
 from models.ANFIS.AbstractANFIS import AbstractANFIS
 
 
 class ANFIS(AbstractANFIS):
-    def __init__(self,  input_dim: int, num_mfs: int, scaler: Optional = None,
-                 criterion: Optional[nn.Module] = None):
+    def __init__(self,  input_dim: int, num_mfs: int, feature_scaler: Optional[MinMaxScaler] = None, target_scaler: Optional[MinMaxScaler] = None,
+                 criterion: Optional[nn.Module] = None, device: Optional[torch.device] = None):
         super(ANFIS, self).__init__(input_dim, num_mfs, num_mfs ** input_dim,
                  criterion)
+        self.device = DEVICE if device is None else device
+        self.feature_scaler = feature_scaler if feature_scaler is not None else MinMaxScaler(feature_range=(0,1))
+        self.target_scaler = target_scaler if target_scaler is not None else MinMaxScaler(feature_range=(0,1))
+        self.criterion = nn.MSELoss(reduction='mean') if criterion is None else criterion
 
         rule_premises = torch.zeros(self.num_rules, self.input_dim, dtype=torch.long)
         for i in range(self.num_rules):
@@ -55,6 +62,4 @@ class ANFIS(AbstractANFIS):
         # --- Layer 5: Aggregation ---
         # O_5,i = sum(w_i_bar * f_i)
         output = torch.sum(normalized_firing_strengths * rule_outputs, dim=1, keepdim=True)
-
         return output
-

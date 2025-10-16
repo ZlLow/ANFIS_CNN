@@ -7,7 +7,6 @@ def get_num_rules_with_hdbscan(df_train, min_cluster_size=15):
     Uses HDBSCAN to find the optimal number of clusters (rules) from the training data.
     """
     print(f"Running HDBSCAN to determine num_rules with min_cluster_size={min_cluster_size}...")
-
     # Scaling is crucial for distance-based algorithms like HDBSCAN
     scaler = StandardScaler()
     scaled_data = scaler.fit_transform(df_train)
